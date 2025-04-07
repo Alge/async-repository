@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "async-repository"
+version = "0.1.0"
+description = "An async-first, interface-driven repository abstraction layer for Python apps"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  { name = "Martin Alge", email = "martin@alge.se" }
+]
+keywords = ["repository", "async", "database", "abstraction", "crud"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Framework :: AsyncIO",
+]
+
+dependencies = [
+    "pydantic",
+]
+
+[project.optional-dependencies]
+postgresql = [
+  "asyncpg>=0.27"
+]
+
+mongodb = [
+  "pymongo>=4.0",
+  "motor>=3.1"
+]
+
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "mypy",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
