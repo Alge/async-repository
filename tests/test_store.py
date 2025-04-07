@@ -1,16 +1,20 @@
 import pytest
-from repositories.base.exceptions import KeyAlreadyExistsException
-from repositories.base.query import QueryOptions
-from repositories.postgresql.base import PostgreSQLRepository
+from async_repository.base.exceptions import KeyAlreadyExistsException
+from async_repository.base.query import QueryOptions
+from async_repository.postgresql.base import PostgreSQLRepository
 from tests.conftest import Entity
 
-from tests.testlib import REPOSITORY_IMPLEMENTATIONS
+from tests.conftest import REPOSITORY_IMPLEMENTATIONS
 
-from tests.repositories.create_postgres_tables import create_entity_table
+from tests.create_postgres_tables import create_entity_table
 
 
-@pytest.mark.skip("Does not work, the Entity class generates it's own IDs. Need another test class for this.")
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.skip(
+    "Does not work, the Entity class generates it's own IDs. Need another test class for this."
+)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_store_with_none_app_id_when_fields_same(repository_factory, logger):
     """
     Test that the repository correctly handles storing entities with None app_id
@@ -52,5 +56,7 @@ async def test_store_with_none_app_id_when_fields_same(repository_factory, logge
     assert len(entities) == 2
     logger.info(entities)
     assert False
-    assert all(entity.id is not None for entity in entities), "All entities should have generated IDs"
+    assert all(
+        entity.id is not None for entity in entities
+    ), "All entities should have generated IDs"
     assert entities[0].id != entities[1].id, "Generated IDs should be unique"

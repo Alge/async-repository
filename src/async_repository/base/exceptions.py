@@ -1,4 +1,3 @@
-
 class ObjectNotFoundException(Exception):
     """Exception raised when an object with the specified identifier does not exist."""
 
@@ -11,4 +10,3 @@ class KeyAlreadyExistsException(Exception):
 
     def __init__(self, message: str = "An object with the same key already exists."):
         super().__init__(message)
-

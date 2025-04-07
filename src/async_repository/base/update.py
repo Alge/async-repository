@@ -3,6 +3,7 @@ from typing import Any, Dict, Type, get_type_hints, get_origin, get_args, Union
 import inspect
 from inspect import isclass
 
+
 class Update:
     """
     A builder for update instructions. This class provides a fluent interface
@@ -51,11 +52,14 @@ class Update:
 
             if not hasattr(current_type, "__annotations__"):
                 raise TypeError(
-                    f"Cannot validate nested field '{current_field}': parent is not a class with annotations")
+                    f"Cannot validate nested field '{current_field}': parent is not a class with annotations"
+                )
 
             type_hints = get_type_hints(current_type)
             if part not in type_hints:
-                raise TypeError(f"Field '{current_field}' does not exist in {current_type.__name__}")
+                raise TypeError(
+                    f"Field '{current_field}' does not exist in {current_type.__name__}"
+                )
 
             expected_type = type_hints[part]
 
@@ -67,7 +71,8 @@ class Update:
                 origin = get_origin(expected_type)
                 if origin is dict:
                     raise TypeError(
-                        f"Cannot validate nested field '{current_field}': Dict type cannot be used for nested field validation")
+                        f"Cannot validate nested field '{current_field}': Dict type cannot be used for nested field validation"
+                    )
                 current_type = expected_type
 
     def _validate_value(self, field: str, value: Any, expected_type: Type) -> None:
@@ -90,7 +95,9 @@ class Update:
         if origin is not None:
             if origin in (list, set, tuple):
                 if not isinstance(value, origin):
-                    raise TypeError(f"Field '{field}' expected {origin.__name__}, got {type(value).__name__}")
+                    raise TypeError(
+                        f"Field '{field}' expected {origin.__name__}, got {type(value).__name__}"
+                    )
                 args = get_args(expected_type)
                 if args and args[0] != Any:
                     item_type = args[0]
@@ -98,7 +105,9 @@ class Update:
                         self._validate_value(f"{field}[{i}]", item, item_type)
             elif origin is dict:
                 if not isinstance(value, dict):
-                    raise TypeError(f"Field '{field}' expected dict, got {type(value).__name__}")
+                    raise TypeError(
+                        f"Field '{field}' expected dict, got {type(value).__name__}"
+                    )
                 args = get_args(expected_type)
                 if len(args) == 2 and args[1] != Any:
                     key_type, value_type = args
@@ -118,7 +127,9 @@ class Update:
                     except TypeError:
                         continue
                 if not valid:
-                    raise TypeError(f"Field '{field}', type: {type(value)} and value {value} does not match any type in {expected_type}")
+                    raise TypeError(
+                        f"Field '{field}', type: {type(value)} and value {value} does not match any type in {expected_type}"
+                    )
             return  # After processing a generic container or union, we can return
 
         # Regular type checking for non-generic types
@@ -131,9 +142,13 @@ class Update:
                 if hasattr(expected_type, "__annotations__"):
                     for attr, attr_type in get_type_hints(expected_type).items():
                         if hasattr(value, attr):
-                            self._validate_value(f"{field}.{attr}", getattr(value, attr), attr_type)
+                            self._validate_value(
+                                f"{field}.{attr}", getattr(value, attr), attr_type
+                            )
                 return
-            raise TypeError(f"Field '{field}' expected {expected_type.__name__}, got {type(value).__name__}")
+            raise TypeError(
+                f"Field '{field}' expected {expected_type.__name__}, got {type(value).__name__}"
+            )
 
     def set(self, field: str, value: Any) -> "Update":
         self._validate_field(field, value)
@@ -150,14 +165,17 @@ class Update:
                 type_hints = get_type_hints(current_type)
                 if part not in type_hints:
                     raise TypeError(
-                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}")
+                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}"
+                    )
                 current_type = type_hints[part]
 
             # Get the type of the final field
             last_part = field_parts[-1]
             type_hints = get_type_hints(current_type)
             if last_part not in type_hints:
-                raise TypeError(f"Field '{field}' does not exist in {current_type.__name__}")
+                raise TypeError(
+                    f"Field '{field}' does not exist in {current_type.__name__}"
+                )
 
             field_type = type_hints[last_part]
             origin = get_origin(field_type)
@@ -188,14 +206,17 @@ class Update:
                 type_hints = get_type_hints(current_type)
                 if part not in type_hints:
                     raise TypeError(
-                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}")
+                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}"
+                    )
                 current_type = type_hints[part]
 
             # Get the type of the final field
             last_part = field_parts[-1]
             type_hints = get_type_hints(current_type)
             if last_part not in type_hints:
-                raise TypeError(f"Field '{field}' does not exist in {current_type.__name__}")
+                raise TypeError(
+                    f"Field '{field}' does not exist in {current_type.__name__}"
+                )
 
             field_type = type_hints[last_part]
             origin = get_origin(field_type)
@@ -206,7 +227,9 @@ class Update:
 
             # Validate direction is either 1 or -1
             if direction not in (1, -1):
-                raise ValueError("Direction must be either 1 (last element) or -1 (first element)")
+                raise ValueError(
+                    "Direction must be either 1 (last element) or -1 (first element)"
+                )
 
         self._operations.setdefault("pop", {})[field] = direction
         return self
@@ -221,14 +244,17 @@ class Update:
                 type_hints = get_type_hints(current_type)
                 if part not in type_hints:
                     raise TypeError(
-                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}")
+                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}"
+                    )
                 current_type = type_hints[part]
 
             # Check if the final field exists
             last_part = field_parts[-1]
             type_hints = get_type_hints(current_type)
             if last_part not in type_hints:
-                raise TypeError(f"Field '{field}' does not exist in {current_type.__name__}")
+                raise TypeError(
+                    f"Field '{field}' does not exist in {current_type.__name__}"
+                )
 
         # In MongoDB, the $unset operator ignores the value; here we set it to an empty string.
         self._operations.setdefault("unset", {})[field] = ""
@@ -244,14 +270,17 @@ class Update:
                 type_hints = get_type_hints(current_type)
                 if part not in type_hints:
                     raise TypeError(
-                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}")
+                        f"Field '{'.'.join(field_parts[:i + 1])}' does not exist in {current_type.__name__}"
+                    )
                 current_type = type_hints[part]
 
             # Get the type of the final field
             last_part = field_parts[-1]
             type_hints = get_type_hints(current_type)
             if last_part not in type_hints:
-                raise TypeError(f"Field '{field}' does not exist in {current_type.__name__}")
+                raise TypeError(
+                    f"Field '{field}' does not exist in {current_type.__name__}"
+                )
 
             field_type = type_hints[last_part]
             origin = get_origin(field_type)
@@ -295,12 +324,14 @@ class Update:
             "push": "$push",
             "pop": "$pop",
             "unset": "$unset",
-            "pull": "$pull"
+            "pull": "$pull",
         }
         payload = {}
         for op, data in self._operations.items():
             # Recursively convert any Pydantic model instances to dicts.
-            serialized_data = {field: self._serialize_value(val) for field, val in data.items()}
+            serialized_data = {
+                field: self._serialize_value(val) for field, val in data.items()
+            }
             payload[mapping[op]] = serialized_data
         return payload
 

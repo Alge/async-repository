@@ -1,15 +1,18 @@
 import pytest
-from repositories.base.exceptions import ObjectNotFoundException
-from repositories.base.query import QueryOptions
+from async_repository.base.exceptions import ObjectNotFoundException
+from async_repository.base.query import QueryOptions
 from tests.conftest import Entity
-from tests.testlib import REPOSITORY_IMPLEMENTATIONS
+from tests.conftest import REPOSITORY_IMPLEMENTATIONS
 
 
 # =============================================================================
 # Tests for delete_one method
 # =============================================================================
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_entity(repository_factory, test_entity, logger):
     """Test deleting an existing entity."""
     repo = repository_factory(type(test_entity))
@@ -19,7 +22,9 @@ async def test_delete_entity(repository_factory, test_entity, logger):
         await repo.get(test_entity.id, logger)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_non_existent(repository_factory, test_entity, logger):
     """Test deleting a non-existent entity raises an exception."""
     repo = repository_factory(type(test_entity))
@@ -28,7 +33,9 @@ async def test_delete_non_existent(repository_factory, test_entity, logger):
         await repo.delete_one(non_existent_id, logger)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_one_by_db_id(repository_factory, test_entity, logger):
     """
     Test deleting a single entity by database ID using delete_one.
@@ -37,8 +44,8 @@ async def test_delete_one_by_db_id(repository_factory, test_entity, logger):
     stored = await repo.store(test_entity, logger, return_value=True)
 
     # Get the DB ID (implementation specific)
-    if hasattr(stored, '_id'):
-        db_id = getattr(stored, '_id')
+    if hasattr(stored, "_id"):
+        db_id = getattr(stored, "_id")
 
         # Delete the entity by DB ID
         await repo.delete_one(db_id, logger, use_db_id=True)
@@ -54,7 +61,9 @@ async def test_delete_one_by_db_id(repository_factory, test_entity, logger):
 # =============================================================================
 # Tests for delete_many method
 # =============================================================================
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_simple(repository_factory, logger):
     """
     Test deleting multiple entities with delete_many.
@@ -64,13 +73,15 @@ async def test_delete_many_simple(repository_factory, logger):
     entities = [
         Entity(name="Delete1", owner="ToDelete"),
         Entity(name="Delete2", owner="ToDelete"),
-        Entity(name="Keep", owner="Keep")
+        Entity(name="Keep", owner="Keep"),
     ]
     for e in entities:
         await repo.store(e, logger)
 
     # Delete all entities with owner="ToDelete"
-    options = QueryOptions(expression={"owner": {"operator": "eq", "value": "ToDelete"}})
+    options = QueryOptions(
+        expression={"owner": {"operator": "eq", "value": "ToDelete"}}
+    )
     delete_count = await repo.delete_many(options, logger)
 
     # Verify delete count
@@ -85,7 +96,9 @@ async def test_delete_many_simple(repository_factory, logger):
     assert all_entities[0].owner == "Keep"
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_with_limit(repository_factory, logger):
     """
     Test delete_many with a limit to delete only a subset of matching entities.
@@ -95,7 +108,7 @@ async def test_delete_many_with_limit(repository_factory, logger):
     entities = [
         Entity(name="ToDelete", value=100),
         Entity(name="ToDelete", value=200),
-        Entity(name="ToDelete", value=300)
+        Entity(name="ToDelete", value=300),
     ]
     for e in entities:
         await repo.store(e, logger)
@@ -105,7 +118,7 @@ async def test_delete_many_with_limit(repository_factory, logger):
         expression={"name": {"operator": "eq", "value": "ToDelete"}},
         limit=2,
         sort_by="value",
-        sort_desc=False  # Sort ascending by value, so the 2 smallest values should be deleted
+        sort_desc=False,  # Sort ascending by value, so the 2 smallest values should be deleted
     )
 
     delete_count = await repo.delete_many(options, logger)
@@ -122,7 +135,9 @@ async def test_delete_many_with_limit(repository_factory, logger):
     assert remaining[0].value == 300
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_with_offset(repository_factory, logger):
     """
     Test delete_many with offset to skip the first N matching entities.
@@ -133,7 +148,7 @@ async def test_delete_many_with_offset(repository_factory, logger):
         Entity(name="OffsetDelete", value=10),
         Entity(name="OffsetDelete", value=20),
         Entity(name="OffsetDelete", value=30),
-        Entity(name="OffsetDelete", value=40)
+        Entity(name="OffsetDelete", value=40),
     ]
     for e in entities:
         await repo.store(e, logger)
@@ -143,7 +158,7 @@ async def test_delete_many_with_offset(repository_factory, logger):
         expression={"name": {"operator": "eq", "value": "OffsetDelete"}},
         offset=2,
         sort_by="value",
-        sort_desc=False  # Sort ascending, so skip values 10 and 20
+        sort_desc=False,  # Sort ascending, so skip values 10 and 20
     )
 
     delete_count = await repo.delete_many(options, logger)
@@ -159,7 +174,9 @@ async def test_delete_many_with_offset(repository_factory, logger):
     assert sorted(remaining_values) == [10, 20]
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_with_complex_expression(repository_factory, logger):
     """
     Test delete_many with a complex expression involving AND, OR conditions.
@@ -171,7 +188,7 @@ async def test_delete_many_with_complex_expression(repository_factory, logger):
         Entity(name="Bob", value=200, active=True, owner="Y"),
         Entity(name="Charlie", value=150, active=False, owner="X"),
         Entity(name="Dave", value=250, active=True, owner="Y"),
-        Entity(name="Eve", value=300, active=False, owner="X")
+        Entity(name="Eve", value=300, active=False, owner="X"),
     ]
     for e in entities:
         await repo.store(e, logger)
@@ -180,10 +197,12 @@ async def test_delete_many_with_complex_expression(repository_factory, logger):
     expr = {
         "or": [
             {"active": {"operator": "eq", "value": False}},
-            {"and": [
-                {"value": {"operator": "gt", "value": 200}},
-                {"owner": {"operator": "eq", "value": "Y"}}
-            ]}
+            {
+                "and": [
+                    {"value": {"operator": "gt", "value": 200}},
+                    {"owner": {"operator": "eq", "value": "Y"}},
+                ]
+            },
         ]
     }
     options = QueryOptions(expression=expr)
@@ -202,7 +221,9 @@ async def test_delete_many_with_complex_expression(repository_factory, logger):
     assert sorted(remaining_names) == ["Alice", "Bob"]
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_with_no_matches(repository_factory, logger):
     """
     Test delete_many when no entities match the expression.
@@ -214,7 +235,9 @@ async def test_delete_many_with_no_matches(repository_factory, logger):
         await repo.store(e, logger)
 
     # Try to delete entities with a non-existent name
-    options = QueryOptions(expression={"name": {"operator": "eq", "value": "NonExistent"}})
+    options = QueryOptions(
+        expression={"name": {"operator": "eq", "value": "NonExistent"}}
+    )
     delete_count = await repo.delete_many(options, logger)
 
     # Should not have deleted any entities
@@ -225,7 +248,9 @@ async def test_delete_many_with_no_matches(repository_factory, logger):
     assert count == 2
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_many_all_with_no_expression(repository_factory, logger):
     """
     Test that delete_many raises ValueError when no expression is provided.

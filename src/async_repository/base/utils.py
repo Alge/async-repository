@@ -10,6 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 def prepare_for_storage(data: Any) -> Any:
     """
     Recursively convert Pydantic models, dataclasses, and special types to storage-compatible formats.
@@ -77,7 +78,7 @@ def prepare_for_storage(data: Any) -> Any:
         return [prepare_for_storage(item) for item in data]
 
     # Handle Pydantic URL types and other special types
-    if hasattr(data, '__class__') and data.__class__.__module__ == 'pydantic.networks':
+    if hasattr(data, "__class__") and data.__class__.__module__ == "pydantic.networks":
         return str(data)
 
     # Return primitives as-is

@@ -1,16 +1,30 @@
 import json
 from logging import LoggerAdapter
-from typing import Any, AsyncGenerator, Dict, Generic, List, Optional, Tuple, Type, TypeVar, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    cast,
+)
 
 from asyncpg import Pool, Record
 from asyncpg.exceptions import UniqueViolationError
 
-from repositories.base.interfaces import Repository
-from repositories.base.query import QueryOptions
-from repositories.base.exceptions import ObjectNotFoundException, KeyAlreadyExistsException
-from repositories.base.utils import prepare_for_storage  # <-- Import the helper
+from async_repository.base.interfaces import Repository
+from async_repository.base.query import QueryOptions
+from async_repository.base.exceptions import (
+    ObjectNotFoundException,
+    KeyAlreadyExistsException,
+)
+from async_repository.base.utils import prepare_for_storage  # <-- Import the helper
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def quote_identifier(identifier: str) -> str:
@@ -25,12 +39,12 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
     """
 
     def __init__(
-            self,
-            pool: Pool,
-            table_name: str,
-            entity_cls: Type[T],
-            app_id_field: str = "id",
-            db_id_field: str = "db_id",
+        self,
+        pool: Pool,
+        table_name: str,
+        entity_cls: Type[T],
+        app_id_field: str = "id",
+        db_id_field: str = "db_id",
     ):
         self._pool = pool
         self._table_name = table_name
@@ -54,11 +68,11 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         pass
 
     async def get(
-            self,
-            id: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        id: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> T:
         field = self._db_id_field if use_db_id else self._app_id_field
         logger.debug(f"Getting {self._entity_cls.__name__} with {field}: {id}")
@@ -77,27 +91,27 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         return self._row_to_entity(row)
 
     async def get_by_db_id(
-            self,
-            db_id: Any,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self, db_id: Any, logger: LoggerAdapter, timeout: Optional[float] = None
     ) -> T:
         return await self.get(db_id, logger, timeout, use_db_id=True)
 
     async def store(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True,  # still accepted for backwards compatibility
-            return_value: bool = False
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,  # still accepted for backwards compatibility
+        return_value: bool = False,
     ) -> Optional[T]:
         self.validate_entity(entity)
         entity_dict = self._entity_to_dict(entity)
         # Convert special types to storage-compatible formats
         entity_dict = prepare_for_storage(entity_dict)
         # Remove id fields if they are None so the database default can be applied.
-        if self._app_id_field in entity_dict and entity_dict[self._app_id_field] is None:
+        if (
+            self._app_id_field in entity_dict
+            and entity_dict[self._app_id_field] is None
+        ):
             del entity_dict[self._app_id_field]
         if self._db_id_field in entity_dict and entity_dict[self._db_id_field] is None:
             del entity_dict[self._db_id_field]
@@ -136,18 +150,21 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
             return None
 
     async def upsert(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True  # still accepted for backwards compatibility
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,  # still accepted for backwards compatibility
     ) -> None:
         self.validate_entity(entity)
         entity_dict = self._entity_to_dict(entity)
         # Convert special types to storage-compatible formats
         entity_dict = prepare_for_storage(entity_dict)
         # Remove id fields if they are None so that the database default can be applied.
-        if self._app_id_field in entity_dict and entity_dict[self._app_id_field] is None:
+        if (
+            self._app_id_field in entity_dict
+            and entity_dict[self._app_id_field] is None
+        ):
             del entity_dict[self._app_id_field]
         if self._db_id_field in entity_dict and entity_dict[self._db_id_field] is None:
             del entity_dict[self._db_id_field]
@@ -155,7 +172,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         fields = list(entity_dict.keys())
         values = list(entity_dict.values())
         placeholders = [f"${i + 1}" for i in range(len(fields))]
-        logger.debug(f"Upserting {self._entity_cls.__name__}: {entity_dict.get(self._app_id_field)}")
+        logger.debug(
+            f"Upserting {self._entity_cls.__name__}: {entity_dict.get(self._app_id_field)}"
+        )
         query = (
             f"INSERT INTO {quote_identifier(self._table_name)} "
             f"({', '.join(quote_identifier(f) for f in fields)}) "
@@ -166,21 +185,21 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         async with self._pool.acquire() as conn:
             await conn.execute(query, *values)
 
-
     async def update_one(
-            self,
-            options: QueryOptions,
-            update: "Update",
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            return_value: bool = False
+        self,
+        options: QueryOptions,
+        update: "Update",
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        return_value: bool = False,
     ) -> Optional[T]:
         """
         Update specific fields of a single entity matching the provided QueryOptions.
         Uses a CTE to limit the update to one record.
         """
         logger.debug(
-            f"Updating one {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}")
+            f"Updating one {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}"
+        )
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for update.")
         where_clause, params, _ = self._transform_expression(options.expression, 1)
@@ -201,21 +220,23 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                 row = await conn.fetchrow(update_query, *(params + set_params))
                 if not row:
                     raise ObjectNotFoundException(
-                        f"{self._entity_cls.__name__} not found with criteria {options.expression}")
+                        f"{self._entity_cls.__name__} not found with criteria {options.expression}"
+                    )
                 return self._row_to_entity(row)
             else:
                 result = await conn.execute(update_query, *(params + set_params))
                 if result == "UPDATE 0":
                     raise ObjectNotFoundException(
-                        f"{self._entity_cls.__name__} not found with criteria {options.expression}")
+                        f"{self._entity_cls.__name__} not found with criteria {options.expression}"
+                    )
                 return None
 
     async def update_many(
-            self,
-            options: QueryOptions,
-            update: "Update",
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        update: "Update",
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         """
         Update specific fields of all entities matching the provided QueryOptions.
@@ -223,12 +244,18 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         Returns the number of entities updated.
         """
         logger.debug(
-            f"Updating many {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}")
+            f"Updating many {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}"
+        )
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for update.")
 
         # If limit/offset/sort/random_order are provided, retrieve specific IDs first.
-        if options.limit > 0 or options.offset > 0 or options.sort_by or options.random_order:
+        if (
+            options.limit > 0
+            or options.offset > 0
+            or options.sort_by
+            or options.random_order
+        ):
             where_clause, params, _ = self._transform_expression(options.expression, 1)
             order_clause = ""
             if options.random_order:
@@ -253,7 +280,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                 return 0
             ids = [row[self.db_id_field] for row in rows]
             placeholders = [f"${i}" for i in range(1, len(ids) + 1)]
-            where_clause = f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
+            where_clause = (
+                f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
+            )
             params = ids
         else:
             where_clause, params, _ = self._transform_expression(options.expression, 1)
@@ -274,22 +303,29 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
             return 0
 
     async def delete_many(
-            self,
-            options: QueryOptions,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         """
         Delete entities matching the provided QueryOptions.
         If a limit/offset/sort is provided, deletes only that subset.
         Returns the count of deleted entities.
         """
-        logger.debug(f"Deleting many {self._entity_cls.__name__} with options: {options.expression}")
+        logger.debug(
+            f"Deleting many {self._entity_cls.__name__} with options: {options.expression}"
+        )
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for delete.")
 
         # If limit, offset, sort, or random_order is provided, select specific IDs.
-        if options.limit > 0 or options.offset > 0 or options.sort_by or options.random_order:
+        if (
+            options.limit > 0
+            or options.offset > 0
+            or options.sort_by
+            or options.random_order
+        ):
             where_clause, params, _ = self._transform_expression(options.expression, 1)
             order_clause = ""
             if options.random_order:
@@ -314,7 +350,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                 return 0
             ids = [row[self.db_id_field] for row in rows]
             placeholders = [f"${i}" for i in range(1, len(ids) + 1)]
-            where_clause = f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
+            where_clause = (
+                f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
+            )
             params = ids
         else:
             where_clause, params, _ = self._transform_expression(options.expression, 1)
@@ -328,34 +366,34 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
             return 0
 
     async def delete_one(
-            self,
-            id: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        id: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> None:
         """
         Delete a single entity from the repository by reusing delete_many with a limit of 1.
         """
         field = self._db_id_field if use_db_id else self._app_id_field
         filter_opts = QueryOptions(
-            expression={field: {"operator": "eq", "value": id}},
-            limit=1,
-            offset=0
+            expression={field: {"operator": "eq", "value": id}}, limit=1, offset=0
         )
         count_deleted = await self.delete_many(filter_opts, logger, timeout)
         if count_deleted == 0:
-            raise ObjectNotFoundException(f"{self._entity_cls.__name__} with ID {id} not found")
+            raise ObjectNotFoundException(
+                f"{self._entity_cls.__name__} with ID {id} not found"
+            )
         elif count_deleted > 1:
             logger.warning(f"delete_one: More than one document deleted for ID {id}")
 
     async def list(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> AsyncGenerator[T, None]:
         options = options or QueryOptions()
-        logger.debug(f"Listing {self._entity_cls.__name__} with options: {options.__dict__}")
+        logger.debug(
+            f"Listing {self._entity_cls.__name__} with options: {options.__dict__}"
+        )
         query, params = self._build_query(options)
         logger.debug(f"SQL query: {query}")
         logger.debug(f"SQL params: {params}")
@@ -365,12 +403,12 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                 yield self._row_to_entity(row)
 
     async def count(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> int:
         options = options or QueryOptions()
-        logger.debug(f"Counting {self._entity_cls.__name__} with options: {options.__dict__}")
+        logger.debug(
+            f"Counting {self._entity_cls.__name__} with options: {options.__dict__}"
+        )
         if options.expression:
             base_query, params, _ = self._transform_expression(options.expression, 1)
         else:
@@ -410,21 +448,27 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
     def _build_base_query(self, options: QueryOptions) -> Tuple[str, List[Any]]:
         return "", []
 
-    def _transform_expression(self, expr: Dict[str, Any], start_index: int = 1) -> Tuple[str, List[Any], int]:
+    def _transform_expression(
+        self, expr: Dict[str, Any], start_index: int = 1
+    ) -> Tuple[str, List[Any], int]:
         clauses = []
         params = []
         current_index = start_index
         if "and" in expr:
             sub_clauses = []
             for sub_expr in expr["and"]:
-                clause, sub_params, current_index = self._transform_expression(sub_expr, current_index)
+                clause, sub_params, current_index = self._transform_expression(
+                    sub_expr, current_index
+                )
                 sub_clauses.append(f"({clause})")
                 params.extend(sub_params)
             return " AND ".join(sub_clauses), params, current_index
         if "or" in expr:
             sub_clauses = []
             for sub_expr in expr["or"]:
-                clause, sub_params, current_index = self._transform_expression(sub_expr, current_index)
+                clause, sub_params, current_index = self._transform_expression(
+                    sub_expr, current_index
+                )
                 sub_clauses.append(f"({clause})")
                 params.extend(sub_params)
             return " OR ".join(sub_clauses), params, current_index
@@ -477,7 +521,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     if not value:
                         clause = "FALSE"
                     else:
-                        placeholders = [f"${current_index + i}" for i in range(len(value))]
+                        placeholders = [
+                            f"${current_index + i}" for i in range(len(value))
+                        ]
                         clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' IN ({', '.join(placeholders)})"
                         params.extend([str(v) for v in value])
                         current_index += len(value)
@@ -485,13 +531,17 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     if not value:
                         clause = "TRUE"
                     else:
-                        placeholders = [f"${current_index + i}" for i in range(len(value))]
+                        placeholders = [
+                            f"${current_index + i}" for i in range(len(value))
+                        ]
                         clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' NOT IN ({', '.join(placeholders)})"
                         params.extend([str(v) for v in value])
                         current_index += len(value)
                 elif operator == "contains":
                     # For contains on nested JSONB arrays
-                    jsonb_parent_path = jsonb_path.rsplit(",", 1)[0] if "," in jsonb_path else ""
+                    jsonb_parent_path = (
+                        jsonb_path.rsplit(",", 1)[0] if "," in jsonb_path else ""
+                    )
                     if jsonb_parent_path:
                         clause = f"{safe_main_field}::jsonb #> '{{{jsonb_parent_path}}}' @> ${current_index}::jsonb"
                     else:
@@ -565,7 +615,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     if not value:
                         clause = "FALSE"
                     else:
-                        placeholders = [f"${current_index + i}" for i in range(len(value))]
+                        placeholders = [
+                            f"${current_index + i}" for i in range(len(value))
+                        ]
                         clause = f"{safe_field} IN ({', '.join(placeholders)})"
                         params.extend(value)
                         current_index += len(value)
@@ -605,7 +657,9 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
             clauses.append(clause)
         return " AND ".join(clauses), params, current_index
 
-    def _build_set_clause(self, update_payload: Dict[str, Any], start_index: int) -> Tuple[str, List[Any]]:
+    def _build_set_clause(
+        self, update_payload: Dict[str, Any], start_index: int
+    ) -> Tuple[str, List[Any]]:
         """
         Build the SET clause for SQL UPDATE from the MongoDB-style update payload.
         """
@@ -631,14 +685,16 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     path_parts = sub_field.split(".")
                     array_path = ", ".join([f"'{part}'" for part in path_parts])
 
-                    set_parts.append(f"""
+                    set_parts.append(
+                        f"""
                         {safe_main_field} = jsonb_set(
                             COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
                             ARRAY[{array_path}],
                             ${current_index}::jsonb,
                             true
                         )
-                    """)
+                    """
+                    )
                     params.append(json_value)
                     current_index += 1
                 else:
@@ -666,22 +722,40 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     array_path = ", ".join([f"'{part}'" for part in path_parts])
 
                     # Use jsonb_set with the #- operator to remove the specified path
-                    set_parts.append(f"""
+                    set_parts.append(
+                        f"""
                         {safe_main_field} = ({safe_main_field}::jsonb #- ARRAY[{array_path}])
-                    """)
+                    """
+                    )
                 else:
                     safe_field = quote_identifier(field)
                     # Generic field type handling based on name patterns
-                    if field.endswith('_at') or field in ('created_at', 'updated_at'):
+                    if field.endswith("_at") or field in ("created_at", "updated_at"):
                         set_parts.append(f"{safe_field} = CURRENT_TIMESTAMP")
-                    elif field in ('tags',) or field.endswith('_tags') or field.endswith('_list') or field.endswith(
-                            '_array'):
+                    elif (
+                        field in ("tags",)
+                        or field.endswith("_tags")
+                        or field.endswith("_list")
+                        or field.endswith("_array")
+                    ):
                         set_parts.append(f"{safe_field} = '{{}}'::jsonb")
-                    elif field in ('metadata', 'profile') or field.endswith('_data') or field.endswith('_info'):
+                    elif (
+                        field in ("metadata", "profile")
+                        or field.endswith("_data")
+                        or field.endswith("_info")
+                    ):
                         set_parts.append(f"{safe_field} = '{{}}'::jsonb")
-                    elif field in ('active',) or field.startswith('is_') or field.endswith('_active'):
+                    elif (
+                        field in ("active",)
+                        or field.startswith("is_")
+                        or field.endswith("_active")
+                    ):
                         set_parts.append(f"{safe_field} = false")
-                    elif field.endswith('_count') or field == 'value' or field.endswith('_value'):
+                    elif (
+                        field.endswith("_count")
+                        or field == "value"
+                        or field.endswith("_value")
+                    ):
                         set_parts.append(f"{safe_field} = 0")
                     else:
                         set_parts.append(f"{safe_field} = ''")
@@ -707,7 +781,8 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     path_parts = sub_field.split(".")
                     array_path = ", ".join([f"'{part}'" for part in path_parts])
 
-                    set_parts.append(f"""
+                    set_parts.append(
+                        f"""
                         {safe_main_field} = jsonb_set(
                             COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
                             ARRAY[{array_path}],
@@ -728,13 +803,15 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                             END,
                             true
                         )
-                    """)
+                    """
+                    )
                     params.append(json_value)
                     current_index += 1
                 else:
                     safe_field = quote_identifier(field)
                     set_parts.append(
-                        f"{safe_field} = CASE WHEN {safe_field} IS NULL THEN ARRAY[${current_index}] ELSE array_append({safe_field}, ${current_index}) END")
+                        f"{safe_field} = CASE WHEN {safe_field} IS NULL THEN ARRAY[${current_index}] ELSE array_append({safe_field}, ${current_index}) END"
+                    )
                     params.append(value)
                     current_index += 1
 
@@ -758,7 +835,8 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     path_parts = sub_field.split(".")
                     array_path = ", ".join([f"'{part}'" for part in path_parts])
 
-                    set_parts.append(f"""
+                    set_parts.append(
+                        f"""
                         {safe_main_field} = jsonb_set(
                             COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
                             ARRAY[{array_path}],
@@ -777,12 +855,15 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                             ),
                             true
                         )
-                    """)
+                    """
+                    )
                     params.append(json_value)
                     current_index += 1
                 else:
                     safe_field = quote_identifier(field)
-                    set_parts.append(f"{safe_field} = array_remove({safe_field}, ${current_index})")
+                    set_parts.append(
+                        f"{safe_field} = array_remove({safe_field}, ${current_index})"
+                    )
                     params.append(value)
                     current_index += 1
 
@@ -798,7 +879,8 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                     array_path = ", ".join([f"'{part}'" for part in path_parts])
 
                     if direction == 1:  # Pop last element
-                        set_parts.append(f"""
+                        set_parts.append(
+                            f"""
                             {safe_main_field} = jsonb_set(
                                 COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
                                 ARRAY[{array_path}],
@@ -839,9 +921,11 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                                 ),
                                 true
                             )
-                        """)
+                        """
+                        )
                     elif direction == -1:  # Pop first element
-                        set_parts.append(f"""
+                        set_parts.append(
+                            f"""
                             {safe_main_field} = jsonb_set(
                                 COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
                                 ARRAY[{array_path}],
@@ -874,15 +958,18 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
                                 ),
                                 true
                             )
-                        """)
+                        """
+                        )
                 else:
                     safe_field = quote_identifier(field)
                     if direction == 1:  # Pop last element
                         set_parts.append(
-                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[1:array_length({safe_field}, 1)-1] ELSE {safe_field} END")
+                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[1:array_length({safe_field}, 1)-1] ELSE {safe_field} END"
+                        )
                     elif direction == -1:  # Pop first element
                         set_parts.append(
-                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[2:array_length({safe_field}, 1)] ELSE {safe_field} END")
+                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[2:array_length({safe_field}, 1)] ELSE {safe_field} END"
+                        )
 
         if not set_parts:
             raise ValueError("No valid update operations found in the Update object")
@@ -916,8 +1003,10 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
             # For list fields, if they're homogeneous primitive types,
             # keep them as lists for PostgreSQL arrays
             elif isinstance(value, list):
-                if len(value) == 0 or (all(isinstance(item, (str, int, float, bool)) for item in value) and
-                                       all(isinstance(item, type(value[0])) for item in value)):
+                if len(value) == 0 or (
+                    all(isinstance(item, (str, int, float, bool)) for item in value)
+                    and all(isinstance(item, type(value[0])) for item in value)
+                ):
                     # Keep as a list for PostgreSQL array type
                     pass
                 else:

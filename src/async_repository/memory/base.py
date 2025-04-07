@@ -2,14 +2,29 @@ import asyncio
 import copy
 import random
 from logging import LoggerAdapter
-from typing import Any, AsyncGenerator, Dict, Generic, List, Optional, Type, TypeVar, get_origin, Union, get_args
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Type,
+    TypeVar,
+    get_origin,
+    Union,
+    get_args,
+)
 
-from repositories.base.interfaces import Repository
-from repositories.base.exceptions import ObjectNotFoundException, KeyAlreadyExistsException
-from repositories.base.query import QueryOptions
-from repositories.base.update import Update  # custom update class
+from async_repository.base.interfaces import Repository
+from async_repository.base.exceptions import (
+    ObjectNotFoundException,
+    KeyAlreadyExistsException,
+)
+from async_repository.base.query import QueryOptions
+from async_repository.base.update import Update  # custom update class
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 import uuid
 
@@ -18,7 +33,7 @@ def _get_nested_value(entity_dict, nested_field):
     """
     Get a value from a nested field using dot notation.
     """
-    parts = nested_field.split('.')
+    parts = nested_field.split(".")
     curr = entity_dict
     for part in parts[:-1]:
         if part not in curr or not isinstance(curr[part], dict):
@@ -33,7 +48,7 @@ def _set_nested_value(entity_dict, nested_field, value):
     """
     Set a value at a nested field using dot notation.
     """
-    parts = nested_field.split('.')
+    parts = nested_field.split(".")
     curr = entity_dict
     for part in parts[:-1]:
         if part not in curr:
@@ -49,7 +64,7 @@ def _unset_nested_value(entity_dict, nested_field):
     """
     Remove a value at a nested field using dot notation.
     """
-    parts = nested_field.split('.')
+    parts = nested_field.split(".")
     curr = entity_dict
     for part in parts[:-1]:
         if part not in curr or not isinstance(curr[part], dict):
@@ -62,29 +77,35 @@ def _unset_nested_value(entity_dict, nested_field):
 
 
 async def update_one(
-        self,
-        options: QueryOptions,
-        update: Update,
-        logger: LoggerAdapter,
-        timeout: Optional[float] = None,
-        return_value: bool = False
+    self,
+    options: QueryOptions,
+    update: Update,
+    logger: LoggerAdapter,
+    timeout: Optional[float] = None,
+    return_value: bool = False,
 ) -> Optional[T]:
     """
     Update specific fields of a single entity matching the provided QueryOptions.
     Returns the updated entity if return_value is True.
     """
-    logger.debug(f"Updating one {self._entity_cls.__name__} with options: {options}, update: {update}")
+    logger.debug(
+        f"Updating one {self._entity_cls.__name__} with options: {options}, update: {update}"
+    )
     await asyncio.sleep(0)
     if not options.expression:
         raise ValueError("QueryOptions must include an 'expression' for update.")
     filtered = await self._filter_entities(options)
     if not filtered:
-        raise ObjectNotFoundException(f"{self._entity_cls.__name__} not found with criteria {options.expression}")
+        raise ObjectNotFoundException(
+            f"{self._entity_cls.__name__} not found with criteria {options.expression}"
+        )
     # Get first matching record.
     record = filtered[0]
     db_id = record.get(self._db_id_field) or record.get(self._app_id_field)
     if not db_id:
-        raise ObjectNotFoundException(f"Could not determine identifier for record matching {options.expression}")
+        raise ObjectNotFoundException(
+            f"Could not determine identifier for record matching {options.expression}"
+        )
     entity_dict = self._store[db_id]
     # Convert update object to dictionary.
     update_payload = update.build()
@@ -93,7 +114,10 @@ async def update_one(
         new_app_id = update_payload["$set"][self._app_id_field]
         old_app_id = entity_dict.get(self._app_id_field)
         if new_app_id != old_app_id:
-            if new_app_id in self._app_id_index and self._app_id_index[new_app_id] != db_id:
+            if (
+                new_app_id in self._app_id_index
+                and self._app_id_index[new_app_id] != db_id
+            ):
                 raise KeyAlreadyExistsException(
                     f"{self._entity_cls.__name__} with application ID {new_app_id} already exists"
                 )
@@ -125,21 +149,33 @@ async def update_one(
             for key, direction in data.items():
                 if "." in key:
                     nested_array = _get_nested_value(entity_dict, key)
-                    if nested_array is not None and isinstance(nested_array, list) and nested_array:
+                    if (
+                        nested_array is not None
+                        and isinstance(nested_array, list)
+                        and nested_array
+                    ):
                         if direction == 1:
                             nested_array.pop()
                         elif direction == -1:
                             nested_array.pop(0)
                         else:
-                            raise ValueError("Invalid pop direction; use 1 (pop last) or -1 (pop first).")
+                            raise ValueError(
+                                "Invalid pop direction; use 1 (pop last) or -1 (pop first)."
+                            )
                 else:
-                    if key in entity_dict and isinstance(entity_dict[key], list) and entity_dict[key]:
+                    if (
+                        key in entity_dict
+                        and isinstance(entity_dict[key], list)
+                        and entity_dict[key]
+                    ):
                         if direction == 1:
                             entity_dict[key].pop()
                         elif direction == -1:
                             entity_dict[key].pop(0)
                         else:
-                            raise ValueError("Invalid pop direction; use 1 (pop last) or -1 (pop first).")
+                            raise ValueError(
+                                "Invalid pop direction; use 1 (pop last) or -1 (pop first)."
+                            )
         elif op == "$unset":
             for key in data.keys():
                 if "." in key:
@@ -163,18 +199,20 @@ async def update_one(
 
 
 async def update_many(
-        self,
-        options: QueryOptions,
-        update: Update,
-        logger: LoggerAdapter,
-        timeout: Optional[float] = None
+    self,
+    options: QueryOptions,
+    update: Update,
+    logger: LoggerAdapter,
+    timeout: Optional[float] = None,
 ) -> int:
     """
     Update specific fields of entities matching the provided QueryOptions,
     respecting limit/offset/sort if provided.
     Returns the number of entities updated.
     """
-    logger.debug(f"Updating many {self._entity_cls.__name__} with options: {options}, update: {update}")
+    logger.debug(
+        f"Updating many {self._entity_cls.__name__} with options: {options}, update: {update}"
+    )
     await asyncio.sleep(0)
     if not options.expression:
         raise ValueError("QueryOptions must include an 'expression' for update.")
@@ -190,9 +228,9 @@ async def update_many(
             sort_field = self._db_id_field
         filtered.sort(key=lambda x: x.get(sort_field, ""), reverse=options.sort_desc)
     if options.offset > 0:
-        filtered = filtered[options.offset:]
+        filtered = filtered[options.offset :]
     if options.limit > 0:
-        filtered = filtered[:options.limit]
+        filtered = filtered[: options.limit]
     if not filtered:
         return 0
 
@@ -207,7 +245,10 @@ async def update_many(
             new_app_id = update_payload["$set"][self._app_id_field]
             old_app_id = entity_dict.get(self._app_id_field)
             if new_app_id != old_app_id:
-                if new_app_id in self._app_id_index and self._app_id_index[new_app_id] != db_id:
+                if (
+                    new_app_id in self._app_id_index
+                    and self._app_id_index[new_app_id] != db_id
+                ):
                     raise KeyAlreadyExistsException(
                         f"{self._entity_cls.__name__} with application ID {new_app_id} already exists"
                     )
@@ -230,7 +271,9 @@ async def update_many(
                         else:
                             nested_array.append(value)
                     else:
-                        if key not in entity_dict or not isinstance(entity_dict[key], list):
+                        if key not in entity_dict or not isinstance(
+                            entity_dict[key], list
+                        ):
                             entity_dict[key] = [value]
                         else:
                             entity_dict[key].append(value)
@@ -238,20 +281,32 @@ async def update_many(
                 for key, direction in data.items():
                     if "." in key:
                         nested_array = _get_nested_value(entity_dict, key)
-                        if nested_array is not None and isinstance(nested_array, list) and nested_array:
+                        if (
+                            nested_array is not None
+                            and isinstance(nested_array, list)
+                            and nested_array
+                        ):
                             if direction == 1:
                                 nested_array.pop()
                             elif direction == -1:
                                 nested_array.pop(0)
                             else:
-                                raise ValueError("Invalid pop direction; use 1 (pop last) or -1 (pop first).")
-                    elif key in entity_dict and isinstance(entity_dict[key], list) and entity_dict[key]:
+                                raise ValueError(
+                                    "Invalid pop direction; use 1 (pop last) or -1 (pop first)."
+                                )
+                    elif (
+                        key in entity_dict
+                        and isinstance(entity_dict[key], list)
+                        and entity_dict[key]
+                    ):
                         if direction == 1:
                             entity_dict[key].pop()
                         elif direction == -1:
                             entity_dict[key].pop(0)
                         else:
-                            raise ValueError("Invalid pop direction; use 1 (pop last) or -1 (pop first).")
+                            raise ValueError(
+                                "Invalid pop direction; use 1 (pop last) or -1 (pop first)."
+                            )
             elif op == "$unset":
                 for key in data.keys():
                     if "." in key:
@@ -279,10 +334,7 @@ class MemoryRepository(Repository[T], Generic[T]):
     """
 
     def __init__(
-            self,
-            entity_cls: Type[T],
-            app_id_field: str = "id",
-            db_id_field: str = "_id"
+        self, entity_cls: Type[T], app_id_field: str = "id", db_id_field: str = "_id"
     ):
         self._entity_cls = entity_cls
         self._app_id_field = app_id_field
@@ -327,39 +379,40 @@ class MemoryRepository(Repository[T], Generic[T]):
         return self._db_id_field
 
     async def get(
-            self,
-            id: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        id: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> T:
         field = self._db_id_field if use_db_id else self._app_id_field
         if use_db_id:
             if id not in self._store:
-                raise ObjectNotFoundException(f"{self._entity_cls.__name__} with database ID {id} not found")
+                raise ObjectNotFoundException(
+                    f"{self._entity_cls.__name__} with database ID {id} not found"
+                )
             entity_dict = self._store[id]
         else:
             if id not in self._app_id_index:
-                raise ObjectNotFoundException(f"{self._entity_cls.__name__} with application ID {id} not found")
+                raise ObjectNotFoundException(
+                    f"{self._entity_cls.__name__} with application ID {id} not found"
+                )
             db_id = self._app_id_index[id]
             entity_dict = self._store[db_id]
         return self._dict_to_entity(entity_dict)
 
     async def get_by_db_id(
-            self,
-            db_id: Any,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self, db_id: Any, logger: LoggerAdapter, timeout: Optional[float] = None
     ) -> T:
         return await self.get(db_id, logger, timeout, use_db_id=True)
 
     async def store(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True,
-            return_value: bool = False
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
+        return_value: bool = False,
     ) -> Optional[T]:
         """
         Store an entity in the repository.
@@ -375,11 +428,17 @@ class MemoryRepository(Repository[T], Generic[T]):
         entity_dict = self._entity_to_dict(entity)
 
         # Generate app_id if needed.
-        if generate_app_id and (self._app_id_field not in entity_dict or entity_dict.get(self._app_id_field) is None):
+        if generate_app_id and (
+            self._app_id_field not in entity_dict
+            or entity_dict.get(self._app_id_field) is None
+        ):
             entity_dict[self._app_id_field] = self.id_generator()
 
         # Generate db_id if needed.
-        if self._db_id_field not in entity_dict or entity_dict.get(self._db_id_field) is None:
+        if (
+            self._db_id_field not in entity_dict
+            or entity_dict.get(self._db_id_field) is None
+        ):
             entity_dict[self._db_id_field] = self.id_generator()
 
         app_id = entity_dict.get(self._app_id_field)
@@ -409,11 +468,11 @@ class MemoryRepository(Repository[T], Generic[T]):
             return None
 
     async def upsert(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
     ) -> None:
         self.validate_entity(entity)
         entity_dict = self._entity_to_dict(entity)
@@ -435,37 +494,39 @@ class MemoryRepository(Repository[T], Generic[T]):
         self._store[entity_dict[self._db_id_field]] = copy.deepcopy(entity_dict)
 
     async def update_one(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            return_value: bool = False
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        return_value: bool = False,
     ) -> Optional[T]:
         # Use the previously defined update_one function.
         return await update_one(self, options, update, logger, timeout, return_value)
 
     async def update_many(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         # Use the previously defined update_many function.
         return await update_many(self, options, update, logger, timeout)
 
     async def delete_many(
-            self,
-            options: QueryOptions,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         """
         Delete entities matching the provided QueryOptions, respecting limit.
         Returns the number of entities deleted.
         """
-        logger.debug(f"Deleting many {self._entity_cls.__name__} with options: {options}")
+        logger.debug(
+            f"Deleting many {self._entity_cls.__name__} with options: {options}"
+        )
         await asyncio.sleep(0)
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for delete.")
@@ -478,11 +539,13 @@ class MemoryRepository(Repository[T], Generic[T]):
                 sort_field = self._app_id_field
             elif sort_field == self._db_id_field:
                 sort_field = self._db_id_field
-            filtered.sort(key=lambda x: x.get(sort_field, ""), reverse=options.sort_desc)
+            filtered.sort(
+                key=lambda x: x.get(sort_field, ""), reverse=options.sort_desc
+            )
         if options.offset > 0:
-            filtered = filtered[options.offset:]
+            filtered = filtered[options.offset :]
         if options.limit > 0:
-            filtered = filtered[:options.limit]
+            filtered = filtered[: options.limit]
         count = 0
         for record in filtered:
             db_id = record.get(self._db_id_field) or record.get(self._app_id_field)
@@ -496,21 +559,19 @@ class MemoryRepository(Repository[T], Generic[T]):
         return count
 
     async def list(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> AsyncGenerator[T, None]:
         options = options or QueryOptions()
         filtered_entities = await self._filter_entities(options)
         sorted_entities = self._sort_entities(filtered_entities, options)
-        paginated_entities = sorted_entities[options.offset:options.offset + options.limit]
+        paginated_entities = sorted_entities[
+            options.offset : options.offset + options.limit
+        ]
         for entity_dict in paginated_entities:
             yield self._dict_to_entity(entity_dict)
 
     async def count(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> int:
         options = options or QueryOptions()
         filtered_entities = await self._filter_entities(options)
@@ -526,12 +587,19 @@ class MemoryRepository(Repository[T], Generic[T]):
                 filtered.append(copy.deepcopy(entity_dict))
         return filtered
 
-
-    def _matches_expression(self, entity_dict: Dict[str, Any], expr: Dict[str, Any]) -> bool:
+    def _matches_expression(
+        self, entity_dict: Dict[str, Any], expr: Dict[str, Any]
+    ) -> bool:
         if "and" in expr:
-            return all(self._matches_expression(entity_dict, sub_expr) for sub_expr in expr["and"])
+            return all(
+                self._matches_expression(entity_dict, sub_expr)
+                for sub_expr in expr["and"]
+            )
         if "or" in expr:
-            return any(self._matches_expression(entity_dict, sub_expr) for sub_expr in expr["or"])
+            return any(
+                self._matches_expression(entity_dict, sub_expr)
+                for sub_expr in expr["or"]
+            )
 
         for field, condition in expr.items():
             # Get value considering potential nested fields
@@ -547,8 +615,9 @@ class MemoryRepository(Repository[T], Generic[T]):
                     return False
         return True
 
-
-    def _check_operator(self, operator: str, entity_value: Any, filter_value: Any) -> bool:
+    def _check_operator(
+        self, operator: str, entity_value: Any, filter_value: Any
+    ) -> bool:
         if operator == "eq":
             return entity_value == filter_value
         elif operator == "ne":
@@ -568,24 +637,30 @@ class MemoryRepository(Repository[T], Generic[T]):
         elif operator == "contains":
             return isinstance(entity_value, list) and filter_value in entity_value
         elif operator == "startswith":
-            return isinstance(entity_value, str) and entity_value.startswith(filter_value)
+            return isinstance(entity_value, str) and entity_value.startswith(
+                filter_value
+            )
         elif operator == "endswith":
             return isinstance(entity_value, str) and entity_value.endswith(filter_value)
         elif operator == "exists":
             return (entity_value is not None) == filter_value
         elif operator == "regex":
             import re
-            return isinstance(entity_value, str) and bool(re.search(filter_value, entity_value))
+
+            return isinstance(entity_value, str) and bool(
+                re.search(filter_value, entity_value)
+            )
         elif operator == "like":
             clean_filter = filter_value.replace("%", "")
-            return isinstance(entity_value, str) and clean_filter.lower() in entity_value.lower()
+            return (
+                isinstance(entity_value, str)
+                and clean_filter.lower() in entity_value.lower()
+            )
         else:
             raise ValueError(f"Unsupported operator: {operator}")
 
     def _sort_entities(
-            self,
-            entities: List[Dict[str, Any]],
-            options: QueryOptions
+        self, entities: List[Dict[str, Any]], options: QueryOptions
     ) -> List[Dict[str, Any]]:
         if not entities:
             return entities
@@ -596,12 +671,18 @@ class MemoryRepository(Repository[T], Generic[T]):
             return entities_copy
         sort_field = options.sort_by
         if not sort_field:
-            sort_field = self._app_id_field if self._app_id_field in entities[0] else self._db_id_field
+            sort_field = (
+                self._app_id_field
+                if self._app_id_field in entities[0]
+                else self._db_id_field
+            )
         if sort_field == "id" and self._app_id_field != "id":
             sort_field = self._app_id_field
         elif sort_field == "_id" and self._db_id_field != "_id":
             sort_field = self._db_id_field
-        return sorted(entities, key=lambda x: x.get(sort_field, None), reverse=options.sort_desc)
+        return sorted(
+            entities, key=lambda x: x.get(sort_field, None), reverse=options.sort_desc
+        )
 
     def _entity_to_dict(self, entity: T) -> Dict[str, Any]:
         if hasattr(entity, "model_dump"):

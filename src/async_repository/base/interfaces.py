@@ -4,11 +4,11 @@ from logging import LoggerAdapter
 from typing import AsyncGenerator, Dict, Generic, Optional, Type, TypeVar, Any, Callable
 
 from async_repository.base.exceptions import ObjectNotFoundException
-from repositories.base.query import QueryOptions
-from repositories.base.update import Update  # New custom Update class
+from async_repository.base.query import QueryOptions
+from async_repository.base.update import Update  # New custom Update class
 
 # Type variable for any entity
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def generate_id() -> str:
@@ -50,11 +50,11 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def get(
-            self,
-            id: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        id: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> T:
         """
         Retrieve an entity by its ID.
@@ -63,10 +63,7 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def get_by_db_id(
-            self,
-            db_id: Any,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self, db_id: Any, logger: LoggerAdapter, timeout: Optional[float] = None
     ) -> T:
         """
         Retrieve an entity by its database-specific ID.
@@ -75,12 +72,12 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def store(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True,
-            return_value: bool = False
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
+        return_value: bool = False,
     ) -> Optional[T]:
         """
         Store a new entity in the repository.
@@ -100,11 +97,11 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def upsert(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
     ) -> None:
         """
         Insert or update an entity in the repository.
@@ -124,12 +121,12 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def update_one(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            return_value: bool = False
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        return_value: bool = False,
     ) -> Optional[T]:
         """
         Update specific fields of a single entity matching the provided filter options.
@@ -150,11 +147,11 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def update_many(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         """
         Update specific fields of all entities matching the provided filter options.
@@ -175,11 +172,11 @@ class Repository(Generic[T], ABC):
         pass
 
     async def delete_one(
-            self,
-            identifier: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        identifier: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> None:
         """
         Delete a single entity from the repository by reusing delete_many.
@@ -200,23 +197,27 @@ class Repository(Generic[T], ABC):
         filter_opts = QueryOptions(
             expression={field: {"operator": "eq", "value": identifier}},
             limit=1,
-            offset=0
+            offset=0,
         )
 
         # Call delete_many and expect exactly one deletion.
         count_deleted = await self.delete_many(filter_opts, logger, timeout)
 
         if count_deleted == 0:
-            raise ObjectNotFoundException(f"{self.entity_type.__name__} with ID {identifier} not found")
+            raise ObjectNotFoundException(
+                f"{self.entity_type.__name__} with ID {identifier} not found"
+            )
         elif count_deleted > 1:
-            logger.warning(f"delete_one: More than one document deleted for ID {identifier}")
+            logger.warning(
+                f"delete_one: More than one document deleted for ID {identifier}"
+            )
 
     @abstractmethod
     async def delete_many(
-            self,
-            filter_options: QueryOptions,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        filter_options: QueryOptions,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         """
         Delete all entities matching the provided filter options.
@@ -233,9 +234,7 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def list(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> AsyncGenerator[T, None]:
         """
         List entities matching the provided options.
@@ -251,9 +250,7 @@ class Repository(Generic[T], ABC):
 
     @abstractmethod
     async def count(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> int:
         """
         Count entities matching the provided options.
@@ -284,9 +281,7 @@ class Repository(Generic[T], ABC):
             )
 
     async def find_one(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> T:
         """
         Find a single entity matching the provided query options.

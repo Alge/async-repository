@@ -1,9 +1,10 @@
-
 import pytest
 import re
 from pydantic import BaseModel
 
-from repositories.base.query import QueryOptions, QueryBuilder
+from async_repository.base.query import QueryOptions, QueryBuilder
+
+
 
 # Dummy Pydantic model for validation.
 class User(BaseModel):
@@ -17,16 +18,19 @@ class User(BaseModel):
     role: str = ""
     category: str = ""
 
+
 @pytest.fixture
 def qb():
     # Returns a fresh QueryBuilder for tests that don't need multiple conditions.
     return QueryBuilder(model=User)
+
 
 def test_eq_operator(qb):
     condition = qb.name == "Alice"
     options = qb.filter(condition).build()
     expected = {"name": "Alice"}
     assert options.expression == expected
+
 
 def test_ne_operator(qb):
     # Assuming that the DSL now supports 'ne' via qb.age.ne(30)
@@ -35,24 +39,22 @@ def test_ne_operator(qb):
     expected = {"age": {"operator": "ne", "value": 30}}
     assert options.expression == expected
 
+
 def test_comparison_operator(qb):
     condition = qb.age > 20
     options = qb.filter(condition).build()
     expected = {"age": {"operator": "gt", "value": 20}}
     assert options.expression == expected
 
+
 def test_combined_and_condition(qb):
     condition1 = qb.name == "Alice"
     condition2 = qb.age > 25
     combined = condition1 & condition2
     options = qb.filter(combined).build()
-    expected = {
-        "and": [
-            {"name": "Alice"},
-            {"age": {"operator": "gt", "value": 25}}
-        ]
-    }
+    expected = {"and": [{"name": "Alice"}, {"age": {"operator": "gt", "value": 25}}]}
     assert options.expression == expected
+
 
 def test_combined_or_condition(qb):
     condition1 = qb.status.in_(["active", "pending"])
@@ -62,10 +64,11 @@ def test_combined_or_condition(qb):
     expected = {
         "or": [
             {"status": {"operator": "in", "value": ["active", "pending"]}},
-            {"role": {"operator": "ne", "value": "guest"}}
+            {"role": {"operator": "ne", "value": "guest"}},
         ]
     }
     assert options.expression == expected
+
 
 def test_string_operators():
     # Each condition uses a fresh QueryBuilder instance to avoid state accumulation.
@@ -98,6 +101,7 @@ def test_string_operators():
     expected = {"username": {"operator": "endswith", "value": "user"}}
     assert options.expression == expected
 
+
 def test_exists_and_regex_operators():
     # exists operator with its own QueryBuilder
     qb_exists = QueryBuilder(model=User)
@@ -112,6 +116,7 @@ def test_exists_and_regex_operators():
     options = qb_regex.filter(condition).build()
     expected = {"code": {"operator": "regex", "value": r"^\d{3}-\d{3}$"}}
     assert options.expression == expected
+
 
 def test_in_and_nin_operators():
     # in operator with its own QueryBuilder
@@ -128,6 +133,7 @@ def test_in_and_nin_operators():
     expected = {"category": {"operator": "nin", "value": ["obsolete", "deprecated"]}}
     assert options.expression == expected
 
+
 def test_sort_limit_offset_timeout():
     qb_instance = QueryBuilder(model=User)
     qb_instance.sort_by("name", descending=True)
@@ -141,11 +147,13 @@ def test_sort_limit_offset_timeout():
     assert options.offset == 10
     assert options.timeout == 5.0
 
+
 def test_random_order(qb):
     # Verify that the random_order flag is set when calling random_order().
     qb.random_order()
     options = qb.build()
     assert options.random_order is True
+
 
 def test_invalid_field():
     qb_instance = QueryBuilder(model=User)

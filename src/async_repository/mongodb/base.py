@@ -8,13 +8,18 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 
-from repositories.base.interfaces import Repository
-from repositories.base.exceptions import ObjectNotFoundException, KeyAlreadyExistsException
-from repositories.base.query import QueryOptions
-from repositories.base.update import Update
-from repositories.base.utils import prepare_for_storage  # Import from centralized location
+from async_repository.base.interfaces import Repository
+from async_repository.base.exceptions import (
+    ObjectNotFoundException,
+    KeyAlreadyExistsException,
+)
+from async_repository.base.query import QueryOptions
+from async_repository.base.update import Update
+from async_repository.base.utils import (
+    prepare_for_storage,
+)  # Import from centralized location
 
-T = TypeVar('T')
+T = TypeVar("T")
 base_logger = logging.getLogger(__name__)
 
 
@@ -24,14 +29,14 @@ class MongoDBRepository(Repository[T], Generic[T]):
     """
 
     def __init__(
-            self,
-            client: AsyncIOMotorClient,
-            database_name: str,
-            collection_name: str,
-            entity_cls: Type[T],
-            app_id_field: str = "id",
-            db_id_field: str = "_id",
-            auto_ensure_indexes: bool = False
+        self,
+        client: AsyncIOMotorClient,
+        database_name: str,
+        collection_name: str,
+        entity_cls: Type[T],
+        app_id_field: str = "id",
+        db_id_field: str = "_id",
+        auto_ensure_indexes: bool = False,
     ):
         self._client = client
         self._db = client[database_name]
@@ -42,8 +47,13 @@ class MongoDBRepository(Repository[T], Generic[T]):
         if auto_ensure_indexes:
             self._ensure_indices()
 
-        base_logger.debug("Initialized mongodb repository for class: %s, client: %s, database: %s, collection: %s",
-                          entity_cls, client, database_name, collection_name)
+        base_logger.debug(
+            "Initialized mongodb repository for class: %s, client: %s, database: %s, collection: %s",
+            entity_cls,
+            client,
+            database_name,
+            collection_name,
+        )
 
     @property
     def entity_type(self) -> Type[T]:
@@ -63,11 +73,11 @@ class MongoDBRepository(Repository[T], Generic[T]):
         pass
 
     async def get(
-            self,
-            id: str,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            use_db_id: bool = False
+        self,
+        id: str,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        use_db_id: bool = False,
     ) -> T:
         field = self._db_id_field if use_db_id else self._app_id_field
         logger.debug(f"Getting {self._entity_cls.__name__} with {field}: {id}")
@@ -75,24 +85,23 @@ class MongoDBRepository(Repository[T], Generic[T]):
         doc = await self._collection.find_one(query)
         if not doc:
             id_type = "database" if use_db_id else "application"
-            raise ObjectNotFoundException(f"{self._entity_cls.__name__} with {id_type} ID {id} not found")
+            raise ObjectNotFoundException(
+                f"{self._entity_cls.__name__} with {id_type} ID {id} not found"
+            )
         return self._document_to_entity(doc)
 
     async def get_by_db_id(
-            self,
-            db_id: Any,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self, db_id: Any, logger: LoggerAdapter, timeout: Optional[float] = None
     ) -> T:
         return await self.get(db_id, logger, timeout, use_db_id=True)
 
     async def store(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True,
-            return_value: bool = False
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
+        return_value: bool = False,
     ) -> Optional[T]:
         self.validate_entity(entity)
         doc = self._entity_to_document(entity)
@@ -120,11 +129,11 @@ class MongoDBRepository(Repository[T], Generic[T]):
             return None
 
     async def upsert(
-            self,
-            entity: T,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            generate_app_id: bool = True
+        self,
+        entity: T,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        generate_app_id: bool = True,
     ) -> None:
         self.validate_entity(entity)
         doc = self._entity_to_document(entity)
@@ -140,7 +149,9 @@ class MongoDBRepository(Repository[T], Generic[T]):
         elif self._db_id_field in doc:
             query[self._db_id_field] = doc[self._db_id_field]
         else:
-            raise ValueError(f"Entity must have either {self._db_id_field} or {self._app_id_field}")
+            raise ValueError(
+                f"Entity must have either {self._db_id_field} or {self._app_id_field}"
+            )
         await self._collection.replace_one(query, doc, upsert=True)
 
     def _parse_update_object(self, update: Update) -> Dict[str, Any]:
@@ -161,15 +172,16 @@ class MongoDBRepository(Repository[T], Generic[T]):
         return update_operations
 
     async def update_one(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None,
-            return_value: bool = False
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
+        return_value: bool = False,
     ) -> Optional[T]:
         logger.debug(
-            f"Updating (one) {self._entity_cls.__name__} with criteria: {options.expression}, update: {update}")
+            f"Updating (one) {self._entity_cls.__name__} with criteria: {options.expression}, update: {update}"
+        )
 
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for update.")
@@ -180,26 +192,30 @@ class MongoDBRepository(Repository[T], Generic[T]):
         result = await self._collection.update_one(query, update_operations)
 
         if result.matched_count == 0:
-            raise ObjectNotFoundException(f"{self._entity_cls.__name__} not found with criteria {options.expression}")
+            raise ObjectNotFoundException(
+                f"{self._entity_cls.__name__} not found with criteria {options.expression}"
+            )
 
         if return_value:
             updated_doc = await self._collection.find_one(query)
             if not updated_doc:
                 raise ObjectNotFoundException(
-                    f"{self._entity_cls.__name__} not found with criteria {options.expression} after update")
+                    f"{self._entity_cls.__name__} not found with criteria {options.expression} after update"
+                )
             return self._document_to_entity(updated_doc)
         else:
             return None
 
     async def update_many(
-            self,
-            options: QueryOptions,
-            update: Update,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        update: Update,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
         logger.debug(
-            f"Updating (many) {self._entity_cls.__name__} with criteria: {options.expression}, update: {update}")
+            f"Updating (many) {self._entity_cls.__name__} with criteria: {options.expression}, update: {update}"
+        )
 
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for update.")
@@ -216,16 +232,25 @@ class MongoDBRepository(Repository[T], Generic[T]):
                 if query:
                     pipeline.append({"$match": query})
                 pipeline.append({"$sample": {"size": sample_size}})
-                docs_to_update = await self._collection.aggregate(pipeline).to_list(length=sample_size)
+                docs_to_update = await self._collection.aggregate(pipeline).to_list(
+                    length=sample_size
+                )
             else:
                 sort_direction = DESCENDING if options.sort_desc else ASCENDING
-                sort_field = self._app_id_field if not options.sort_by else options.sort_by
+                sort_field = (
+                    self._app_id_field if not options.sort_by else options.sort_by
+                )
                 if sort_field == "id" and self._app_id_field != "id":
                     sort_field = self._app_id_field
                 elif sort_field == "_id" and self._db_id_field != "_id":
                     sort_field = self._db_id_field
-                docs_to_update = await self._collection.find(query).sort(sort_field, sort_direction) \
-                    .skip(options.offset).limit(options.limit).to_list(length=options.limit)
+                docs_to_update = (
+                    await self._collection.find(query)
+                    .sort(sort_field, sort_direction)
+                    .skip(options.offset)
+                    .limit(options.limit)
+                    .to_list(length=options.limit)
+                )
             doc_ids = [doc[self._db_id_field] for doc in docs_to_update]
             if not doc_ids:
                 return 0
@@ -235,12 +260,14 @@ class MongoDBRepository(Repository[T], Generic[T]):
         return result.modified_count
 
     async def delete_many(
-            self,
-            options: QueryOptions,
-            logger: LoggerAdapter,
-            timeout: Optional[float] = None
+        self,
+        options: QueryOptions,
+        logger: LoggerAdapter,
+        timeout: Optional[float] = None,
     ) -> int:
-        logger.debug(f"Deleting many {self._entity_cls.__name__} with options: {options}")
+        logger.debug(
+            f"Deleting many {self._entity_cls.__name__} with options: {options}"
+        )
 
         if not options.expression:
             raise ValueError("QueryOptions must include an 'expression' for delete.")
@@ -248,25 +275,39 @@ class MongoDBRepository(Repository[T], Generic[T]):
         # If limit, offset, or sort is specified, get specific document IDs.
         if options.limit > 0 or options.offset > 0 or options.sort_by:
             if options.random_order:
-                sample_size = (options.limit if options.limit > 0 else 1000) + options.offset
+                sample_size = (
+                    options.limit if options.limit > 0 else 1000
+                ) + options.offset
                 pipeline = []
                 query = self._build_query(options)
                 if query:
                     pipeline.append({"$match": query})
                 pipeline.append({"$sample": {"size": sample_size}})
-                docs_to_delete = await self._collection.aggregate(pipeline).to_list(length=sample_size)
-                docs_to_delete = docs_to_delete[options.offset:(options.offset + options.limit)
-                if options.limit > 0 else None]
+                docs_to_delete = await self._collection.aggregate(pipeline).to_list(
+                    length=sample_size
+                )
+                docs_to_delete = docs_to_delete[
+                    options.offset : (
+                        (options.offset + options.limit) if options.limit > 0 else None
+                    )
+                ]
             else:
                 sort_direction = DESCENDING if options.sort_desc else ASCENDING
-                sort_field = self._app_id_field if not options.sort_by else options.sort_by
+                sort_field = (
+                    self._app_id_field if not options.sort_by else options.sort_by
+                )
                 if sort_field == "id" and self._app_id_field != "id":
                     sort_field = self._app_id_field
                 elif sort_field == "_id" and self._db_id_field != "_id":
                     sort_field = self._db_id_field
                 query = self._build_query(options)
-                docs_to_delete = await self._collection.find(query).sort(sort_field, sort_direction) \
-                    .skip(options.offset).limit(options.limit).to_list(length=options.limit)
+                docs_to_delete = (
+                    await self._collection.find(query)
+                    .sort(sort_field, sort_direction)
+                    .skip(options.offset)
+                    .limit(options.limit)
+                    .to_list(length=options.limit)
+                )
             doc_ids = [doc[self._db_id_field] for doc in docs_to_delete]
             if not doc_ids:
                 return 0
@@ -278,9 +319,7 @@ class MongoDBRepository(Repository[T], Generic[T]):
         return result.deleted_count
 
     async def list(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> AsyncGenerator[T, None]:
         options = options or QueryOptions()
         query = self._build_query(options)
@@ -291,8 +330,10 @@ class MongoDBRepository(Repository[T], Generic[T]):
             if query:
                 pipeline.append({"$match": query})
             pipeline.append({"$sample": {"size": sample_size}})
-            docs = await self._collection.aggregate(pipeline).to_list(length=sample_size)
-            docs = docs[options.offset: options.offset + options.limit]
+            docs = await self._collection.aggregate(pipeline).to_list(
+                length=sample_size
+            )
+            docs = docs[options.offset : options.offset + options.limit]
         else:
             sort_direction = DESCENDING if options.sort_desc else ASCENDING
             sort_field = self._app_id_field if not options.sort_by else options.sort_by
@@ -300,19 +341,23 @@ class MongoDBRepository(Repository[T], Generic[T]):
                 sort_field = self._app_id_field
             elif sort_field == "_id" and self._db_id_field != "_id":
                 sort_field = self._db_id_field
-            cursor = self._collection.find(query).sort(sort_field, sort_direction) \
-                .skip(options.offset).limit(options.limit)
+            cursor = (
+                self._collection.find(query)
+                .sort(sort_field, sort_direction)
+                .skip(options.offset)
+                .limit(options.limit)
+            )
             docs = await cursor.to_list(length=options.limit)
         for doc in docs:
             yield self._document_to_entity(doc)
 
     async def count(
-            self,
-            logger: LoggerAdapter,
-            options: Optional[QueryOptions] = None
+        self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> int:
         options = options or QueryOptions()
-        logger.debug(f"Counting {self._entity_cls.__name__} with options: {options.__dict__}")
+        logger.debug(
+            f"Counting {self._entity_cls.__name__} with options: {options.__dict__}"
+        )
         query = self._build_query(options)
         return await self._collection.count_documents(query)
 
@@ -323,9 +368,15 @@ class MongoDBRepository(Repository[T], Generic[T]):
 
     def _transform_expression(self, expr: Dict[str, Any]) -> Dict[str, Any]:
         if "and" in expr:
-            return {"$and": [self._transform_expression(sub_expr) for sub_expr in expr["and"]]}
+            return {
+                "$and": [
+                    self._transform_expression(sub_expr) for sub_expr in expr["and"]
+                ]
+            }
         if "or" in expr:
-            return {"$or": [self._transform_expression(sub_expr) for sub_expr in expr["or"]]}
+            return {
+                "$or": [self._transform_expression(sub_expr) for sub_expr in expr["or"]]
+            }
         result = {}
         for field, condition in expr.items():
             if isinstance(condition, dict):
@@ -360,7 +411,9 @@ class MongoDBRepository(Repository[T], Generic[T]):
                     result[field] = {"$regex": value, "$options": "i"}
                 elif operator == "like":
                     if "%" in value:
-                        pattern = ".*".join(re.escape(part) for part in value.split("%"))
+                        pattern = ".*".join(
+                            re.escape(part) for part in value.split("%")
+                        )
                     else:
                         pattern = f".*{re.escape(value)}.*"
                     result[field] = {"$regex": pattern, "$options": "i"}
@@ -408,14 +461,16 @@ class MongoDBRepository(Repository[T], Generic[T]):
 
         # If app_id_field and db_id_field are different, ensure app_id is populated
         if self._app_id_field != self._db_id_field:
-            if self._db_id_field in entity_dict and not entity_dict.get(self._app_id_field):
+            if self._db_id_field in entity_dict and not entity_dict.get(
+                self._app_id_field
+            ):
                 entity_dict[self._app_id_field] = entity_dict[self._db_id_field]
 
         # Remove any fields that shouldn't be passed to the entity constructor
         # This includes db_id_field (if it's different from app_id_field)
         # and any MongoDB-specific fields like '_id' that aren't explicitly used as db_id_field
-        if '_id' in entity_dict and '_id' != self._db_id_field:
-            del entity_dict['_id']
+        if "_id" in entity_dict and "_id" != self._db_id_field:
+            del entity_dict["_id"]
 
         if self._db_id_field in entity_dict:
             del entity_dict[self._db_id_field]

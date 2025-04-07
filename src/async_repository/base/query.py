@@ -4,6 +4,8 @@ import re
 from typing import Any, Dict, Optional, Type, TypeVar
 
 from pydantic import BaseModel
+
+
 ###############################################################################
 # Query Options
 ###############################################################################
@@ -12,6 +14,7 @@ class QueryOptions:
     Options for querying repositories, including nested DSL expressions,
     sorting, pagination, and additional parameters.
     """
+
     def __init__(
         self,
         expression: Optional[Dict[str, Any]] = None,
@@ -31,9 +34,12 @@ class QueryOptions:
         self.random_order = random_order
 
     def __repr__(self):
-        return (f"QueryOptions(expression={self.expression}, sort_by={self.sort_by}, "
-                f"sort_desc={self.sort_desc}, limit={self.limit}, offset={self.offset}, "
-                f"timeout={self.timeout}), random_order={self.random_order}")
+        return (
+            f"QueryOptions(expression={self.expression}, sort_by={self.sort_by}, "
+            f"sort_desc={self.sort_desc}, limit={self.limit}, offset={self.offset}, "
+            f"timeout={self.timeout}), random_order={self.random_order}"
+        )
+
 
 ###############################################################################
 # DSL Implementation
@@ -42,6 +48,7 @@ class Expression:
     """
     Base class for query expressions.
     """
+
     def __and__(self, other: "Expression") -> "Expression":
         return CombinedCondition("and", self, other)
 
@@ -51,10 +58,12 @@ class Expression:
     def to_dict(self) -> Dict[str, Any]:
         raise NotImplementedError("Subclasses must implement to_dict()")
 
+
 class FilterCondition(Expression):
     """
     Represents a simple filter condition.
     """
+
     def __init__(self, field: str, operator: str, value: Any):
         self.field = field
         self.operator = operator
@@ -69,10 +78,12 @@ class FilterCondition(Expression):
     def __repr__(self) -> str:
         return f"FilterCondition({self.field!r}, {self.operator!r}, {self.value!r})"
 
+
 class CombinedCondition(Expression):
     """
     Represents a combined filter condition using logical 'and' or 'or'.
     """
+
     def __init__(self, logical_operator: str, left: Expression, right: Expression):
         if logical_operator not in ("and", "or"):
             raise ValueError("logical_operator must be 'and' or 'or'")
@@ -81,20 +92,17 @@ class CombinedCondition(Expression):
         self.right = right
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            self.logical_operator: [
-                self.left.to_dict(),
-                self.right.to_dict()
-            ]
-        }
+        return {self.logical_operator: [self.left.to_dict(), self.right.to_dict()]}
 
     def __repr__(self) -> str:
         return f"CombinedCondition({self.logical_operator!r}, {self.left!r}, {self.right!r})"
+
 
 class Field:
     """
     Represents a model field for building query conditions.
     """
+
     def __init__(self, name: str):
         self.name = name
 
@@ -147,10 +155,12 @@ class Field:
     def __repr__(self) -> str:
         return f"Field({self.name!r})"
 
+
 ###############################################################################
 # Query Builder
 ###############################################################################
 T = TypeVar("T", bound=BaseModel)
+
 
 class QueryBuilder:
     """
@@ -158,6 +168,7 @@ class QueryBuilder:
     them against a Pydantic model (if provided), and supports chaining additional
     query parameters like sorting and pagination.
     """
+
     def __init__(self, model: Optional[Type[T]] = None):
         """
         :param model: Optional Pydantic model class for field validation.
@@ -170,7 +181,11 @@ class QueryBuilder:
 
     def __getattr__(self, name: str) -> Field:
         # Only validate if _model has a __fields__ attribute.
-        if self._model and hasattr(self._model, '__fields__') and name not in self._model.__fields__:
+        if (
+            self._model
+            and hasattr(self._model, "__fields__")
+            and name not in self._model.__fields__
+        ):
             raise AttributeError(f"'{self._model.__name__}' has no field '{name}'")
         if name not in self._field_cache:
             self._field_cache[name] = Field(name)

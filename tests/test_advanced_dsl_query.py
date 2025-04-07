@@ -1,11 +1,13 @@
 import pytest
-from repositories.base.exceptions import ObjectNotFoundException
-from repositories.base.query import QueryOptions
+from async_repository.base.exceptions import ObjectNotFoundException
+from async_repository.base.query import QueryOptions
 from tests.conftest import Entity
-from tests.testlib import REPOSITORY_IMPLEMENTATIONS
+from tests.conftest import REPOSITORY_IMPLEMENTATIONS
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_dsl_deeply_nested_expression(repository_factory, logger):
     """
     Test a deeply nested DSL expression:
@@ -29,11 +31,13 @@ async def test_dsl_deeply_nested_expression(repository_factory, logger):
         await repo.store(ent, logger)
     expr = {
         "and": [
-            {"or": [
-                {"name": {"operator": "eq", "value": "Alice"}},
-                {"value": {"operator": "gt", "value": 150}}
-            ]},
-            {"active": {"operator": "eq", "value": True}}
+            {
+                "or": [
+                    {"name": {"operator": "eq", "value": "Alice"}},
+                    {"value": {"operator": "gt", "value": 150}},
+                ]
+            },
+            {"active": {"operator": "eq", "value": True}},
         ]
     }
     options = QueryOptions(expression=expr, limit=100, offset=0)
@@ -45,7 +49,9 @@ async def test_dsl_deeply_nested_expression(repository_factory, logger):
     assert returned_ids == expected_ids
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_dsl_invalid_operator(repository_factory, logger):
     """
     Test DSL expression with an unsupported operator.
@@ -62,7 +68,9 @@ async def test_dsl_invalid_operator(repository_factory, logger):
         [item async for item in repo.list(logger, options)]
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_dsl_no_match(repository_factory, logger):
     """Test DSL expression that matches no entities."""
     repo = repository_factory(Entity)
@@ -78,7 +86,9 @@ async def test_dsl_no_match(repository_factory, logger):
     assert count == 0
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_dsl_in_empty(repository_factory, logger):
     """
     Test DSL 'in' operator with an empty list.

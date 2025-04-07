@@ -2,7 +2,7 @@ import pytest
 from typing import List, Dict, Optional, Union
 from datetime import datetime
 
-from repositories.base.update import Update
+from async_repository.base.update import Update
 
 
 # Define test model classes
@@ -38,7 +38,16 @@ class User:
     addresses: List[Address]
     metadata: Metadata
 
-    def __init__(self, name="", age=0, email=None, active=True, tags=None, addresses=None, metadata=None):
+    def __init__(
+        self,
+        name="",
+        age=0,
+        email=None,
+        active=True,
+        tags=None,
+        addresses=None,
+        metadata=None,
+    ):
         self.name = name
         self.age = age
         self.email = email
@@ -126,7 +135,9 @@ def test_update_with_invalid_types():
         update.set("tags", [1, 2, 3])  # Tags should be List[str], not List[int]
 
     with pytest.raises(TypeError):
-        update.set("metadata", ["not", "a", "dict"])  # Metadata should be dict, not list
+        update.set(
+            "metadata", ["not", "a", "dict"]
+        )  # Metadata should be dict, not list
 
 
 def test_update_with_invalid_field():
@@ -316,7 +327,7 @@ def test_update_repr():
     # With operations
     update3 = Update(User).set("name", "John").set("age", 30)
     assert "Update(User).set" in repr(update3)
-    assert "\"John\"" in repr(update3)
+    assert '"John"' in repr(update3)
     assert "30" in repr(update3)
 
 
@@ -369,12 +380,14 @@ def test_existing_code_compatibility():
 # Test combined operations in a single Update
 def test_combined_operations():
     """Test multiple different operations in a single Update instance."""
-    update = (Update(User)
-              .set("name", "John")
-              .push("tags", "new_tag")
-              .pop("addresses", 1)
-              .unset("email")
-              .pull("tags", "old_tag"))
+    update = (
+        Update(User)
+        .set("name", "John")
+        .push("tags", "new_tag")
+        .pop("addresses", 1)
+        .unset("email")
+        .pull("tags", "old_tag")
+    )
 
     result = update.build()
     assert "$set" in result

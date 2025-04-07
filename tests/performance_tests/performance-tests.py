@@ -9,7 +9,10 @@ import matplotlib.pyplot as plt
 import pytest
 import pandas as pd
 
-from repositories.base.exceptions import ObjectNotFoundException, KeyAlreadyExistsException
+from repositories.base.exceptions import (
+    ObjectNotFoundException,
+    KeyAlreadyExistsException,
+)
 from repositories.base.query import QueryOptions
 from repositories.base.update import Update
 from tests.conftest import Entity
@@ -19,6 +22,7 @@ from tests.testlib import REPOSITORY_IMPLEMENTATIONS
 # =============================================================================
 # Performance Metrics Collection
 # =============================================================================
+
 
 class PerformanceMetrics:
     """Class to collect and analyze performance metrics."""
@@ -45,7 +49,9 @@ class PerformanceMetrics:
 
     def total_duration(self) -> float:
         """Get the total duration of all operations."""
-        return self.end_time - self.start_time if self.start_time and self.end_time else 0
+        return (
+            self.end_time - self.start_time if self.start_time and self.end_time else 0
+        )
 
     def throughput(self) -> float:
         """Calculate operations per second."""
@@ -68,7 +74,11 @@ class PerformanceMetrics:
 
     def p95_latency(self) -> float:
         """Get 95th percentile latency."""
-        return statistics.quantiles(self.latencies, n=20)[-1] if len(self.latencies) >= 20 else self.max_latency()
+        return (
+            statistics.quantiles(self.latencies, n=20)[-1]
+            if len(self.latencies) >= 20
+            else self.max_latency()
+        )
 
     def median_latency(self) -> float:
         """Get median latency."""
@@ -85,13 +95,14 @@ class PerformanceMetrics:
             "min_latency_ms": self.min_latency() * 1000,
             "median_latency_ms": self.median_latency() * 1000,
             "p95_latency_ms": self.p95_latency() * 1000,
-            "max_latency_ms": self.max_latency() * 1000
+            "max_latency_ms": self.max_latency() * 1000,
         }
 
 
 # =============================================================================
 # Test Data Generation and Validation
 # =============================================================================
+
 
 async def ensure_entities_exist(repo, entity_ids, logger, batch_size=100):
     """
@@ -111,7 +122,7 @@ async def ensure_entities_exist(repo, entity_ids, logger, batch_size=100):
 
     # Check existence in batches
     for i in range(0, len(entity_ids), batch_size):
-        batch = entity_ids[i:i + batch_size]
+        batch = entity_ids[i : i + batch_size]
 
         # Check each entity individually
         for entity_id in batch:
@@ -124,7 +135,9 @@ async def ensure_entities_exist(repo, entity_ids, logger, batch_size=100):
 
     # Recreate missing entities if needed
     if missing_ids:
-        logger.info(f"Recreating {len(missing_ids)} missing entities for performance testing")
+        logger.info(
+            f"Recreating {len(missing_ids)} missing entities for performance testing"
+        )
         new_entities = []
 
         for i, missing_id in enumerate(missing_ids):
@@ -136,7 +149,7 @@ async def ensure_entities_exist(repo, entity_ids, logger, batch_size=100):
                 active=i % 2 == 0,
                 tags=[f"tag{i % 5}", f"tag{(i + 1) % 5}"],
                 metadata={"recreated": True, "index": i},
-                profile={"emails": [f"recreated{i}@example.com"]}
+                profile={"emails": [f"recreated{i}@example.com"]},
             )
             new_entities.append(entity)
             verified_ids.append(missing_id)
@@ -147,7 +160,9 @@ async def ensure_entities_exist(repo, entity_ids, logger, batch_size=100):
     return verified_ids
 
 
-async def generate_test_data(repo_factory, entity_class: Type, count: int, logger) -> List[str]:
+async def generate_test_data(
+    repo_factory, entity_class: Type, count: int, logger
+) -> List[str]:
     """Generate test data and return the entity IDs."""
     repo = repo_factory(entity_class)
     entity_ids = []
@@ -164,7 +179,7 @@ async def generate_test_data(repo_factory, entity_class: Type, count: int, logge
                 active=j % 2 == 0,
                 tags=[f"tag{j % 5}", f"tag{(j + 1) % 5}"],
                 metadata={"batch": i // batch_size, "index": j},
-                profile={"emails": [f"test{j}@example.com", f"alt{j}@example.com"]}
+                profile={"emails": [f"test{j}@example.com", f"alt{j}@example.com"]},
             )
             entities.append(entity)
             entity_ids.append(entity.id)
@@ -185,6 +200,7 @@ async def generate_test_data(repo_factory, entity_class: Type, count: int, logge
 # Transaction Management for Test Cleanup
 # =============================================================================
 
+
 class TestTransaction:
     """Helper class to manage test data and cleanup for performance tests."""
 
@@ -199,7 +215,8 @@ class TestTransaction:
         """Set up test data and return verified entity IDs."""
         # Use the same repo factory that returns our existing repo instance
         self.entity_ids = await generate_test_data(
-            self.repo_factory, self.entity_class, count, self.logger)
+            self.repo_factory, self.entity_class, count, self.logger
+        )
         return self.entity_ids
 
     async def cleanup(self) -> None:
@@ -210,10 +227,10 @@ class TestTransaction:
         # Delete test entities in batches
         batch_size = 100
         for i in range(0, len(self.entity_ids), batch_size):
-            batch = self.entity_ids[i:i + batch_size]
-            options = QueryOptions(expression={
-                "id": {"operator": "in", "value": batch}
-            })
+            batch = self.entity_ids[i : i + batch_size]
+            options = QueryOptions(
+                expression={"id": {"operator": "in", "value": batch}}
+            )
             try:
                 await self.repo.delete_many(options, self.logger)
             except Exception as e:
@@ -224,7 +241,10 @@ class TestTransaction:
 # Performance Tests - CRUD Operations
 # =============================================================================
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_get_performance(repository_factory, logger):
     """
     Test the performance of get operations.
@@ -275,7 +295,9 @@ async def test_get_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_store_performance(repository_factory, logger):
     """
     Test the performance of store operations.
@@ -298,7 +320,7 @@ async def test_store_performance(repository_factory, logger):
                 value=i % 100,
                 active=i % 2 == 0,
                 tags=[f"tag{i % 5}"],
-                metadata={"test": "performance", "index": i}
+                metadata={"test": "performance", "index": i},
             )
 
             start_time = time.time()
@@ -328,15 +350,19 @@ async def test_store_performance(repository_factory, logger):
     finally:
         # Cleanup stored entities
         for i in range(0, len(stored_ids), 100):
-            batch = stored_ids[i:i + 100]
-            options = QueryOptions(expression={"id": {"operator": "in", "value": batch}})
+            batch = stored_ids[i : i + 100]
+            options = QueryOptions(
+                expression={"id": {"operator": "in", "value": batch}}
+            )
             try:
                 await repo.delete_many(options, logger)
             except Exception as e:
                 logger.error(f"Error cleaning up: {e}")
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_update_one_performance(repository_factory, logger):
     """
     Test the performance of single update operations.
@@ -360,7 +386,9 @@ async def test_update_one_performance(repository_factory, logger):
         for i in range(min(update_count, len(entity_ids))):
             entity_id = entity_ids[i % len(entity_ids)]
             update = Update().set("value", i).set("updated_at", datetime.utcnow())
-            options = QueryOptions(expression={"id": {"operator": "eq", "value": entity_id}})
+            options = QueryOptions(
+                expression={"id": {"operator": "eq", "value": entity_id}}
+            )
 
             start_time = time.time()
             await repo.update_one(options, update, logger)
@@ -389,7 +417,9 @@ async def test_update_one_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_update_many_performance(repository_factory, logger):
     """
     Test the performance of bulk update operations.
@@ -419,7 +449,7 @@ async def test_update_many_performance(repository_factory, logger):
                 options = QueryOptions(
                     expression={"name": {"operator": "like", "value": "PerfTest-%"}},
                     limit=batch_size,
-                    offset=i * batch_size % (entity_count - batch_size)
+                    offset=i * batch_size % (entity_count - batch_size),
                 )
 
                 metrics.start()
@@ -463,7 +493,9 @@ async def test_update_many_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_delete_performance(repository_factory, logger):
     """
     Test the performance of delete operations.
@@ -483,10 +515,7 @@ async def test_delete_performance(repository_factory, logger):
 
     # Create entities specifically for delete_one tests
     for i in range(delete_one_count):
-        entity = Entity(
-            name=f"DeleteOneTest-{i}",
-            value=i
-        )
+        entity = Entity(name=f"DeleteOneTest-{i}", value=i)
         result = await repo.store(entity, logger, return_value=True)
         if result:
             delete_one_ids.append(result.id)
@@ -516,14 +545,13 @@ async def test_delete_performance(repository_factory, logger):
         batch_ids = []
         entities = []
         for i in range(batch_size):
-            entity = Entity(
-                name=f"DeleteManyTest-{batch_size}-{i}",
-                value=i
-            )
+            entity = Entity(name=f"DeleteManyTest-{batch_size}-{i}", value=i)
             entities.append(entity)
 
         # Store entities
-        stored = await asyncio.gather(*[repo.store(entity, logger, return_value=True) for entity in entities])
+        stored = await asyncio.gather(
+            *[repo.store(entity, logger, return_value=True) for entity in entities]
+        )
         batch_ids = [entity.id for entity in stored if entity]
 
         if not batch_ids:
@@ -531,7 +559,9 @@ async def test_delete_performance(repository_factory, logger):
 
         # Measure delete_many performance
         metrics = PerformanceMetrics(f"delete_many_batch_{batch_size}")
-        options = QueryOptions(expression={"id": {"operator": "in", "value": batch_ids}})
+        options = QueryOptions(
+            expression={"id": {"operator": "in", "value": batch_ids}}
+        )
 
         metrics.start()
         count = await repo.delete_many(options, logger)
@@ -548,9 +578,12 @@ async def test_delete_performance(repository_factory, logger):
     repo_name = repo.__class__.__name__
 
     # Create delete performance comparison chart
-    batch_sizes = ["one"] + [result["name"].split("_")[-1] for result in delete_many_results]
-    throughputs = [one_summary["throughput_ops_per_sec"]] + [result["throughput_ops_per_sec"] for result in
-                                                             delete_many_results]
+    batch_sizes = ["one"] + [
+        result["name"].split("_")[-1] for result in delete_many_results
+    ]
+    throughputs = [one_summary["throughput_ops_per_sec"]] + [
+        result["throughput_ops_per_sec"] for result in delete_many_results
+    ]
 
     plt.figure(figsize=(10, 6))
     plt.bar(batch_sizes, throughputs)
@@ -579,7 +612,9 @@ async def test_delete_performance(repository_factory, logger):
             f.write("\n")
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_list_performance(repository_factory, logger):
     """
     Test the performance of list operations.
@@ -600,30 +635,37 @@ async def test_list_performance(repository_factory, logger):
         test_scenarios = [
             ("List All", QueryOptions(limit=entity_count)),
             ("List with Pagination", QueryOptions(limit=100, offset=0)),
-            ("List with Filter", QueryOptions(
-                expression={"active": {"operator": "eq", "value": True}},
-                limit=entity_count
-            )),
-            ("List with Sort", QueryOptions(
-                limit=entity_count,
-                sort_by="value",
-                sort_desc=True
-            )),
-            ("List with Complex Filter", QueryOptions(
-                expression={
-                    "and": [
-                        {"value": {"operator": "gt", "value": 50}},
-                        {"active": {"operator": "eq", "value": True}}
-                    ]
-                },
-                limit=entity_count
-            )),
+            (
+                "List with Filter",
+                QueryOptions(
+                    expression={"active": {"operator": "eq", "value": True}},
+                    limit=entity_count,
+                ),
+            ),
+            (
+                "List with Sort",
+                QueryOptions(limit=entity_count, sort_by="value", sort_desc=True),
+            ),
+            (
+                "List with Complex Filter",
+                QueryOptions(
+                    expression={
+                        "and": [
+                            {"value": {"operator": "gt", "value": 50}},
+                            {"active": {"operator": "eq", "value": True}},
+                        ]
+                    },
+                    limit=entity_count,
+                ),
+            ),
         ]
 
         results = []
 
         for scenario_name, options in test_scenarios:
-            metrics = PerformanceMetrics(f"list_{scenario_name.replace(' ', '_').lower()}")
+            metrics = PerformanceMetrics(
+                f"list_{scenario_name.replace(' ', '_').lower()}"
+            )
 
             # Start timing
             metrics.start()
@@ -682,7 +724,9 @@ async def test_list_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_find_one_performance(repository_factory, logger):
     """
     Test the performance of find_one operations.
@@ -701,26 +745,39 @@ async def test_find_one_performance(repository_factory, logger):
     try:
         # Test scenarios for find_one operation
         test_scenarios = [
-            ("Simple ID", QueryOptions(
-                expression={"id": {"operator": "eq", "value": transaction.entity_ids[0]}}
-            )),
-            ("Name Match", QueryOptions(
-                expression={"name": {"operator": "eq", "value": "PerfTest-0"}}
-            )),
-            ("Complex Filter", QueryOptions(
-                expression={
-                    "and": [
-                        {"value": {"operator": "gt", "value": 50}},
-                        {"active": {"operator": "eq", "value": True}}
-                    ]
-                }
-            )),
+            (
+                "Simple ID",
+                QueryOptions(
+                    expression={
+                        "id": {"operator": "eq", "value": transaction.entity_ids[0]}
+                    }
+                ),
+            ),
+            (
+                "Name Match",
+                QueryOptions(
+                    expression={"name": {"operator": "eq", "value": "PerfTest-0"}}
+                ),
+            ),
+            (
+                "Complex Filter",
+                QueryOptions(
+                    expression={
+                        "and": [
+                            {"value": {"operator": "gt", "value": 50}},
+                            {"active": {"operator": "eq", "value": True}},
+                        ]
+                    }
+                ),
+            ),
         ]
 
         results = []
 
         for scenario_name, options in test_scenarios:
-            metrics = PerformanceMetrics(f"find_one_{scenario_name.replace(' ', '_').lower()}")
+            metrics = PerformanceMetrics(
+                f"find_one_{scenario_name.replace(' ', '_').lower()}"
+            )
 
             # Run multiple iterations to get stable results
             for i in range(20):
@@ -771,7 +828,9 @@ async def test_find_one_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_count_performance(repository_factory, logger):
     """
     Test the performance of count operations.
@@ -791,26 +850,35 @@ async def test_count_performance(repository_factory, logger):
         # Test scenarios for count operation
         test_scenarios = [
             ("Count All", None),
-            ("Count Active", QueryOptions(
-                expression={"active": {"operator": "eq", "value": True}}
-            )),
-            ("Count by Name Pattern", QueryOptions(
-                expression={"name": {"operator": "like", "value": "PerfTest-%"}}
-            )),
-            ("Count with Complex Filter", QueryOptions(
-                expression={
-                    "and": [
-                        {"value": {"operator": "gt", "value": 50}},
-                        {"active": {"operator": "eq", "value": True}}
-                    ]
-                }
-            )),
+            (
+                "Count Active",
+                QueryOptions(expression={"active": {"operator": "eq", "value": True}}),
+            ),
+            (
+                "Count by Name Pattern",
+                QueryOptions(
+                    expression={"name": {"operator": "like", "value": "PerfTest-%"}}
+                ),
+            ),
+            (
+                "Count with Complex Filter",
+                QueryOptions(
+                    expression={
+                        "and": [
+                            {"value": {"operator": "gt", "value": 50}},
+                            {"active": {"operator": "eq", "value": True}},
+                        ]
+                    }
+                ),
+            ),
         ]
 
         results = []
 
         for scenario_name, options in test_scenarios:
-            metrics = PerformanceMetrics(f"count_{scenario_name.replace(' ', '_').lower()}")
+            metrics = PerformanceMetrics(
+                f"count_{scenario_name.replace(' ', '_').lower()}"
+            )
             count_value = 0
 
             # Run multiple iterations to get stable results
@@ -863,7 +931,9 @@ async def test_count_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_upsert_performance(repository_factory, logger):
     """
     Test the performance of upsert operations.
@@ -888,7 +958,7 @@ async def test_upsert_performance(repository_factory, logger):
             value=i % 100,
             active=i % 2 == 0,
             tags=[f"tag{i % 5}"],
-            metadata={"test": "upsert", "index": i}
+            metadata={"test": "upsert", "index": i},
         )
         entities.append(entity)
 
@@ -963,8 +1033,10 @@ async def test_upsert_performance(repository_factory, logger):
     finally:
         # Cleanup
         for i in range(0, len(entity_ids), 100):
-            batch = entity_ids[i:i + 100]
-            options = QueryOptions(expression={"id": {"operator": "in", "value": batch}})
+            batch = entity_ids[i : i + 100]
+            options = QueryOptions(
+                expression={"id": {"operator": "in", "value": batch}}
+            )
             try:
                 await repo.delete_many(options, logger)
             except Exception as e:
@@ -975,7 +1047,10 @@ async def test_upsert_performance(repository_factory, logger):
 # Performance Tests - Complex Operations
 # =============================================================================
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_complex_update_performance(repository_factory, logger):
     """
     Test the performance of different types of update operations.
@@ -1000,13 +1075,15 @@ async def test_complex_update_performance(repository_factory, logger):
             "pull": PerformanceMetrics("pull_operation"),
             "unset": PerformanceMetrics("unset_operation"),
             "nested_set": PerformanceMetrics("nested_set_operation"),
-            "nested_push": PerformanceMetrics("nested_push_operation")
+            "nested_push": PerformanceMetrics("nested_push_operation"),
         }
 
         # Test each operation type
         for i in range(operations_per_type):
             entity_id = entity_ids[i % len(entity_ids)]
-            options = QueryOptions(expression={"id": {"operator": "eq", "value": entity_id}})
+            options = QueryOptions(
+                expression={"id": {"operator": "eq", "value": entity_id}}
+            )
 
             # Set operation
             update = Update().set("value", i).set("updated_at", datetime.utcnow())
@@ -1097,7 +1174,9 @@ async def test_complex_update_performance(repository_factory, logger):
         await transaction.cleanup()
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_concurrent_performance(repository_factory, logger):
     """
     Test performance under concurrent operations.
@@ -1117,7 +1196,9 @@ async def test_concurrent_performance(repository_factory, logger):
 
     try:
         # Define worker functions for different operation types
-        async def get_worker(worker_id: int, num_ops: int, entity_ids: List[str]) -> float:
+        async def get_worker(
+            worker_id: int, num_ops: int, entity_ids: List[str]
+        ) -> float:
             """Worker that performs get operations."""
             start_time = time.time()
             for i in range(num_ops):
@@ -1125,21 +1206,22 @@ async def test_concurrent_performance(repository_factory, logger):
                 await repo.get(entity_id, logger)
             return time.time() - start_time
 
-        async def update_worker(worker_id: int, num_ops: int, entity_ids: List[str]) -> float:
+        async def update_worker(
+            worker_id: int, num_ops: int, entity_ids: List[str]
+        ) -> float:
             """Worker that performs update operations."""
             start_time = time.time()
             for i in range(num_ops):
                 entity_id = entity_ids[(worker_id * 100 + i) % len(entity_ids)]
                 update = Update().set("value", i).set("updated_at", datetime.utcnow())
-                options = QueryOptions(expression={"id": {"operator": "eq", "value": entity_id}})
+                options = QueryOptions(
+                    expression={"id": {"operator": "eq", "value": entity_id}}
+                )
                 await repo.update_one(options, update, logger)
             return time.time() - start_time
 
         # Test operations
-        operations = [
-            ("get", get_worker),
-            ("update", update_worker)
-        ]
+        operations = [("get", get_worker), ("update", update_worker)]
 
         all_results = {}
 
@@ -1152,7 +1234,10 @@ async def test_concurrent_performance(repository_factory, logger):
                 metrics.start()
 
                 # Create and run workers
-                workers = [worker_func(i, operations_per_worker, entity_ids) for i in range(num_workers)]
+                workers = [
+                    worker_func(i, operations_per_worker, entity_ids)
+                    for i in range(num_workers)
+                ]
                 worker_times = await asyncio.gather(*workers)
 
                 # Calculate metrics
@@ -1168,7 +1253,9 @@ async def test_concurrent_performance(repository_factory, logger):
                 # Store results
                 summary = metrics.summary()
                 results.append(summary)
-                print(f"\n{op_name.capitalize()} Concurrent Operations ({num_workers} workers) Results:")
+                print(
+                    f"\n{op_name.capitalize()} Concurrent Operations ({num_workers} workers) Results:"
+                )
                 for key, value in summary.items():
                     print(f"  {key}: {value}")
 
@@ -1183,7 +1270,7 @@ async def test_concurrent_performance(repository_factory, logger):
             throughputs = [result["throughput_ops_per_sec"] for result in results]
 
             plt.subplot(len(operations), 1, idx + 1)
-            plt.plot(concurrency, throughputs, marker='o', label=op_name)
+            plt.plot(concurrency, throughputs, marker="o", label=op_name)
             plt.title(f"{op_name.capitalize()} Throughput vs. Concurrency")
             plt.xlabel("Number of Concurrent Workers")
             plt.ylabel("Operations per Second")
@@ -1220,7 +1307,10 @@ async def test_concurrent_performance(repository_factory, logger):
 # Performance Test for Scalability
 # =============================================================================
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_scalability(repository_factory, logger):
     """
     Test how repository performance scales with database size.
@@ -1238,16 +1328,22 @@ async def test_scalability(repository_factory, logger):
     # Operations to test
     operations = [
         ("get", lambda entity_id: repo.get(entity_id, logger)),
-        ("update", lambda entity_id: repo.update_one(
-            QueryOptions(expression={"id": {"operator": "eq", "value": entity_id}}),
-            Update().set("value", 999).set("updated_at", datetime.utcnow()),
-            logger
-        )),
-        ("find", lambda entity_id: repo.find_one(
-            logger,
-            QueryOptions(expression={"value": {"operator": "gt", "value": 50}})
-        )),
-        ("count", lambda entity_id: repo.count(logger))
+        (
+            "update",
+            lambda entity_id: repo.update_one(
+                QueryOptions(expression={"id": {"operator": "eq", "value": entity_id}}),
+                Update().set("value", 999).set("updated_at", datetime.utcnow()),
+                logger,
+            ),
+        ),
+        (
+            "find",
+            lambda entity_id: repo.find_one(
+                logger,
+                QueryOptions(expression={"value": {"operator": "gt", "value": 50}}),
+            ),
+        ),
+        ("count", lambda entity_id: repo.count(logger)),
     ]
 
     all_results = {}
@@ -1304,11 +1400,11 @@ async def test_scalability(repository_factory, logger):
 
         # Plot each operation type
         for idx, (op_name, results) in enumerate(all_results.items()):
-            sizes = dataset_sizes[:len(results)]
+            sizes = dataset_sizes[: len(results)]
             latencies = [result["avg_latency_ms"] for result in results]
 
             plt.subplot(2, 2, idx + 1)
-            plt.plot(sizes, latencies, marker='o', label=op_name)
+            plt.plot(sizes, latencies, marker="o", label=op_name)
             plt.title(f"{op_name.capitalize()} Latency vs. Database Size")
             plt.xlabel("Number of Entities")
             plt.ylabel("Average Latency (ms)")
@@ -1322,8 +1418,10 @@ async def test_scalability(repository_factory, logger):
         # Cleanup remaining data
         for size, entity_ids in entity_ids_by_size.items():
             for i in range(0, len(entity_ids), 100):
-                batch = entity_ids[i:i + 100]
-                options = QueryOptions(expression={"id": {"operator": "in", "value": batch}})
+                batch = entity_ids[i : i + 100]
+                options = QueryOptions(
+                    expression={"id": {"operator": "in", "value": batch}}
+                )
                 try:
                     await repo.delete_many(options, logger)
                 except Exception as e:
@@ -1334,7 +1432,10 @@ async def test_scalability(repository_factory, logger):
 # Comprehensive Performance Report
 # =============================================================================
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_generate_performance_report(repository_factory, logger):
     """
     Generate a comprehensive performance report for all repository implementations.
@@ -1342,7 +1443,9 @@ async def test_generate_performance_report(repository_factory, logger):
     """
     # Only run if explicitly requested to save test time
     if not os.environ.get("RUN_PERF_REPORT", "false").lower() in ("true", "1", "yes"):
-        pytest.skip("Skipping full performance report. Set RUN_PERF_REPORT=true to generate.")
+        pytest.skip(
+            "Skipping full performance report. Set RUN_PERF_REPORT=true to generate."
+        )
 
     # Configuration
     entity_count = 2000
@@ -1363,38 +1466,56 @@ async def test_generate_performance_report(repository_factory, logger):
         # Define test scenarios
         operations = [
             ("Get by ID", lambda: repo.get(entity_ids[0], logger)),
-            ("Find one", lambda: repo.find_one(
-                logger,
-                QueryOptions(expression={"name": {"operator": "like", "value": "PerfTest-%"}})
-            )),
-            ("Count", lambda: repo.count(logger)),
-            ("Update one", lambda: repo.update_one(
-                QueryOptions(expression={"id": {"operator": "eq", "value": entity_ids[0]}}),
-                Update().set("value", 999),
-                logger
-            )),
-            ("Update many (batch=100)", lambda: repo.update_many(
-                QueryOptions(
-                    expression={"name": {"operator": "like", "value": "PerfTest-%"}},
-                    limit=100
-                ),
-                Update().set("updated_at", datetime.utcnow()),
-                logger
-            )),
-            ("Simple list (limit=100)", lambda: fetch_entities(
-                repo.list(logger, QueryOptions(limit=100)),
-                100
-            )),
-            ("Filtered list", lambda: fetch_entities(
-                repo.list(
+            (
+                "Find one",
+                lambda: repo.find_one(
                     logger,
                     QueryOptions(
-                        expression={"active": {"operator": "eq", "value": True}},
-                        limit=100
-                    )
+                        expression={"name": {"operator": "like", "value": "PerfTest-%"}}
+                    ),
                 ),
-                100
-            )),
+            ),
+            ("Count", lambda: repo.count(logger)),
+            (
+                "Update one",
+                lambda: repo.update_one(
+                    QueryOptions(
+                        expression={"id": {"operator": "eq", "value": entity_ids[0]}}
+                    ),
+                    Update().set("value", 999),
+                    logger,
+                ),
+            ),
+            (
+                "Update many (batch=100)",
+                lambda: repo.update_many(
+                    QueryOptions(
+                        expression={
+                            "name": {"operator": "like", "value": "PerfTest-%"}
+                        },
+                        limit=100,
+                    ),
+                    Update().set("updated_at", datetime.utcnow()),
+                    logger,
+                ),
+            ),
+            (
+                "Simple list (limit=100)",
+                lambda: fetch_entities(repo.list(logger, QueryOptions(limit=100)), 100),
+            ),
+            (
+                "Filtered list",
+                lambda: fetch_entities(
+                    repo.list(
+                        logger,
+                        QueryOptions(
+                            expression={"active": {"operator": "eq", "value": True}},
+                            limit=100,
+                        ),
+                    ),
+                    100,
+                ),
+            ),
         ]
 
         # Helper function to fetch entities from an async generator
@@ -1435,7 +1556,16 @@ async def test_generate_performance_report(repository_factory, logger):
 
         # Generate report
         print(f"\nPerformance Summary for {repo_name}:")
-        print(df[["scenario", "avg_latency_ms", "p95_latency_ms", "throughput_ops_per_sec"]].to_string(index=False))
+        print(
+            df[
+                [
+                    "scenario",
+                    "avg_latency_ms",
+                    "p95_latency_ms",
+                    "throughput_ops_per_sec",
+                ]
+            ].to_string(index=False)
+        )
 
         # Generate charts
         plt.figure(figsize=(12, 8))
@@ -1456,14 +1586,24 @@ async def test_generate_performance_report(repository_factory, logger):
         plt.savefig(f"{output_dir}/{repo_name}_performance.png")
 
         # Generate text report
-        with open(f"{output_dir}/{repo_name}_complete_performance_report.txt", "w") as f:
+        with open(
+            f"{output_dir}/{repo_name}_complete_performance_report.txt", "w"
+        ) as f:
             f.write(f"COMPREHENSIVE PERFORMANCE REPORT FOR {repo_name}\n")
             f.write("=" * 80 + "\n\n")
 
             f.write("PERFORMANCE SUMMARY:\n")
             f.write("-" * 20 + "\n")
             f.write(
-                df[["scenario", "avg_latency_ms", "p95_latency_ms", "throughput_ops_per_sec"]].to_string(index=False))
+                df[
+                    [
+                        "scenario",
+                        "avg_latency_ms",
+                        "p95_latency_ms",
+                        "throughput_ops_per_sec",
+                    ]
+                ].to_string(index=False)
+            )
             f.write("\n\n")
 
             f.write("DETAILED METRICS:\n")

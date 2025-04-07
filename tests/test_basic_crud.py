@@ -1,11 +1,16 @@
 import pytest
-from repositories.base.exceptions import KeyAlreadyExistsException, ObjectNotFoundException
-from repositories.base.query import QueryOptions
+from async_repository.base.exceptions import (
+    KeyAlreadyExistsException,
+    ObjectNotFoundException,
+)
+from async_repository.base.query import QueryOptions
 from tests.conftest import Entity
-from tests.testlib import REPOSITORY_IMPLEMENTATIONS
+from tests.conftest import REPOSITORY_IMPLEMENTATIONS
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_store_and_get(repository_factory, test_entity, logger):
     """Test storing and retrieving an entity."""
     repo = repository_factory(type(test_entity))
@@ -15,7 +20,9 @@ async def test_store_and_get(repository_factory, test_entity, logger):
     assert retrieved.name == test_entity.name
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_duplicate_key_insert(repository_factory, test_entity, logger):
     """Test storing an entity twice triggers a duplicate key exception."""
     repo = repository_factory(type(test_entity))
@@ -24,7 +31,9 @@ async def test_duplicate_key_insert(repository_factory, test_entity, logger):
         await repo.store(test_entity, logger)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_store_return_value(repository_factory, test_entity, logger):
     """
     Test that store returns the stored entity when return_value is True,
@@ -43,7 +52,9 @@ async def test_store_return_value(repository_factory, test_entity, logger):
     assert result_none is None
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_list_entities(repository_factory, logger):
     """Test listing entities returns all stored entities."""
     repo = repository_factory(Entity)
@@ -58,7 +69,9 @@ async def test_list_entities(repository_factory, logger):
     assert stored_ids.issubset(listed_ids)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_list_entities_random_order(repository_factory, logger):
     """
     Test that listing entities with random ordering returns results
@@ -84,16 +97,18 @@ async def test_list_entities_random_order(repository_factory, logger):
     random_ids_2 = await get_ids(QueryOptions(limit=20, offset=0, random_order=True))
 
     # At least one random ordering should differ from the natural ordering.
-    assert ordered_ids != random_ids_1 or ordered_ids != random_ids_2, (
-        "Random ordering should yield a different order than the natural ordering."
-    )
+    assert (
+        ordered_ids != random_ids_1 or ordered_ids != random_ids_2
+    ), "Random ordering should yield a different order than the natural ordering."
     # Two random orderings should also be different.
-    assert random_ids_1 != random_ids_2, (
-        "Two random queries should yield different orders."
-    )
+    assert (
+        random_ids_1 != random_ids_2
+    ), "Two random queries should yield different orders."
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_count_entities(repository_factory, logger):
     """Test counting entities matches the number of entities stored."""
     repo = repository_factory(Entity)
@@ -105,7 +120,9 @@ async def test_count_entities(repository_factory, logger):
     assert count_after == initial_count + len(entities)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_find_one_returns_existing_entity(repository_factory, logger):
     """
     Test that find_one returns an entity when one exists matching the criteria.
@@ -115,16 +132,16 @@ async def test_find_one_returns_existing_entity(repository_factory, logger):
     alice = Entity(name="Alice", value=100)
     await repo.store(alice, logger)
     options = QueryOptions(
-        expression={"name": {"operator": "eq", "value": "Alice"}},
-        limit=10,
-        offset=0
+        expression={"name": {"operator": "eq", "value": "Alice"}}, limit=10, offset=0
     )
     found = await repo.find_one(logger, options)
     assert found.name == "Alice"
     assert found.value == 100
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_find_one_with_multiple_matches_returns_first(repository_factory, logger):
     """
     Test that when multiple entities match the criteria, find_one returns only one.
@@ -136,16 +153,16 @@ async def test_find_one_with_multiple_matches_returns_first(repository_factory, 
     await repo.store(bob1, logger)
     await repo.store(bob2, logger)
     options = QueryOptions(
-        expression={"name": {"operator": "eq", "value": "Bob"}},
-        limit=50,
-        offset=0
+        expression={"name": {"operator": "eq", "value": "Bob"}}, limit=50, offset=0
     )
     found = await repo.find_one(logger, options)
     assert found.name == "Bob"
     assert found.value in (200, 300)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 async def test_find_one_raises_when_not_found(repository_factory, logger):
     """
     Test that find_one raises ObjectNotFoundException when no entity matches the criteria.
@@ -157,20 +174,24 @@ async def test_find_one_raises_when_not_found(repository_factory, logger):
     options = QueryOptions(
         expression={"name": {"operator": "eq", "value": "NonExistent"}},
         limit=50,
-        offset=0
+        offset=0,
     )
     with pytest.raises(ObjectNotFoundException):
         await repo.find_one(logger, options)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 def test_validate_entity_valid(repository_factory, test_entity, logger):
     """Test that validate_entity accepts a valid entity."""
     repo = repository_factory(type(test_entity))
     repo.validate_entity(test_entity)
 
 
-@pytest.mark.parametrize("repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True)
+@pytest.mark.parametrize(
+    "repository_factory", REPOSITORY_IMPLEMENTATIONS, indirect=True
+)
 def test_validate_entity_invalid(repository_factory, test_entity, logger):
     """Test that validate_entity raises ValueError when passed an invalid type."""
     repo = repository_factory(type(test_entity))

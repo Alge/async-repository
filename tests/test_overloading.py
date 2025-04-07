@@ -2,7 +2,14 @@ import pytest
 from pydantic import BaseModel
 from typing import Optional, List
 
-from repositories.base.query import QueryBuilder, QueryOptions, Field, Expression, FilterCondition, CombinedCondition
+from async_repository.base.query import (
+    QueryBuilder,
+    QueryOptions,
+    Field,
+    Expression,
+    FilterCondition,
+    CombinedCondition,
+)
 
 
 # Define a Pydantic model for testing field validation
@@ -63,47 +70,65 @@ class TestQueryDSL:
         in_condition = field.in_(["tag1", "tag2"])
         assert in_condition.operator == "in"
         assert in_condition.value == ["tag1", "tag2"]
-        assert in_condition.to_dict() == {"tags": {"operator": "in", "value": ["tag1", "tag2"]}}
+        assert in_condition.to_dict() == {
+            "tags": {"operator": "in", "value": ["tag1", "tag2"]}
+        }
 
         nin_condition = field.nin(["tag3"])
         assert nin_condition.operator == "nin"
         assert nin_condition.value == ["tag3"]
-        assert nin_condition.to_dict() == {"tags": {"operator": "nin", "value": ["tag3"]}}
+        assert nin_condition.to_dict() == {
+            "tags": {"operator": "nin", "value": ["tag3"]}
+        }
 
         like_condition = field.like("tag%")
         assert like_condition.operator == "like"
         assert like_condition.value == "tag%"
-        assert like_condition.to_dict() == {"tags": {"operator": "like", "value": "tag%"}}
+        assert like_condition.to_dict() == {
+            "tags": {"operator": "like", "value": "tag%"}
+        }
 
         contains_condition = field.contains("tag")
         assert contains_condition.operator == "contains"
         assert contains_condition.value == "tag"
-        assert contains_condition.to_dict() == {"tags": {"operator": "contains", "value": "tag"}}
+        assert contains_condition.to_dict() == {
+            "tags": {"operator": "contains", "value": "tag"}
+        }
 
         startswith_condition = field.startswith("t")
         assert startswith_condition.operator == "startswith"
         assert startswith_condition.value == "t"
-        assert startswith_condition.to_dict() == {"tags": {"operator": "startswith", "value": "t"}}
+        assert startswith_condition.to_dict() == {
+            "tags": {"operator": "startswith", "value": "t"}
+        }
 
         endswith_condition = field.endswith("g")
         assert endswith_condition.operator == "endswith"
         assert endswith_condition.value == "g"
-        assert endswith_condition.to_dict() == {"tags": {"operator": "endswith", "value": "g"}}
+        assert endswith_condition.to_dict() == {
+            "tags": {"operator": "endswith", "value": "g"}
+        }
 
         exists_condition = field.exists()
         assert exists_condition.operator == "exists"
         assert exists_condition.value is True
-        assert exists_condition.to_dict() == {"tags": {"operator": "exists", "value": True}}
+        assert exists_condition.to_dict() == {
+            "tags": {"operator": "exists", "value": True}
+        }
 
         not_exists_condition = field.exists(False)
         assert not_exists_condition.operator == "exists"
         assert not_exists_condition.value is False
-        assert not_exists_condition.to_dict() == {"tags": {"operator": "exists", "value": False}}
+        assert not_exists_condition.to_dict() == {
+            "tags": {"operator": "exists", "value": False}
+        }
 
         regex_condition = field.regex("^tag[0-9]$")
         assert regex_condition.operator == "regex"
         assert regex_condition.value == "^tag[0-9]$"
-        assert regex_condition.to_dict() == {"tags": {"operator": "regex", "value": "^tag[0-9]$"}}
+        assert regex_condition.to_dict() == {
+            "tags": {"operator": "regex", "value": "^tag[0-9]$"}
+        }
 
     def test_logical_operators(self):
         """Test logical AND and OR operators."""
@@ -121,10 +146,7 @@ class TestQueryDSL:
         assert and_condition.right is age_condition
 
         expected_and_dict = {
-            "and": [
-                {"name": "Alice"},
-                {"age": {"operator": "gt", "value": 30}}
-            ]
+            "and": [{"name": "Alice"}, {"age": {"operator": "gt", "value": 30}}]
         }
         assert and_condition.to_dict() == expected_and_dict
 
@@ -136,10 +158,7 @@ class TestQueryDSL:
         assert or_condition.right is age_condition
 
         expected_or_dict = {
-            "or": [
-                {"name": "Alice"},
-                {"age": {"operator": "gt", "value": 30}}
-            ]
+            "or": [{"name": "Alice"}, {"age": {"operator": "gt", "value": 30}}]
         }
         assert or_condition.to_dict() == expected_or_dict
 
@@ -170,18 +189,13 @@ class TestQueryDSL:
 
         expected = {
             "and": [
-                {
-                    "or": [
-                        {"name": "Alice"},
-                        {"name": "Bob"}
-                    ]
-                },
+                {"or": [{"name": "Alice"}, {"name": "Bob"}]},
                 {
                     "and": [
                         {"age": {"operator": "ge", "value": 18}},
-                        {"age": {"operator": "le", "value": 65}}
+                        {"age": {"operator": "le", "value": 65}},
                     ]
-                }
+                },
             ]
         }
 
@@ -212,10 +226,7 @@ class TestQueryDSL:
 
         options = qb.build()
         expected = {
-            "and": [
-                {"name": "Alice"},
-                {"age": {"operator": "gt", "value": 30}}
-            ]
+            "and": [{"name": "Alice"}, {"age": {"operator": "gt", "value": 30}}]
         }
 
         assert options.expression == expected
@@ -294,23 +305,18 @@ class TestQueryDSL:
 
         expected = {
             "and": [
-                {
-                    "or": [
-                        {"name": "Alice"},
-                        {"name": "Bob"}
-                    ]
-                },
+                {"or": [{"name": "Alice"}, {"name": "Bob"}]},
                 {
                     "or": [
                         {"age": {"operator": "gt", "value": 20}},
                         {
                             "and": [
                                 {"age": {"operator": "lt", "value": 18}},
-                                {"email": {"operator": "exists", "value": True}}
+                                {"email": {"operator": "exists", "value": True}},
                             ]
-                        }
+                        },
                     ]
-                }
+                },
             ]
         }
 
@@ -332,7 +338,7 @@ class TestQueryDSL:
             limit=25,
             offset=10,
             random_order=True,
-            timeout=30.0
+            timeout=30.0,
         )
 
         repr_str = repr(options)
@@ -379,7 +385,9 @@ class TestQueryDSL:
         class TestExpression(Expression):
             pass
 
-        with pytest.raises(NotImplementedError, match="Subclasses must implement to_dict()"):
+        with pytest.raises(
+            NotImplementedError, match="Subclasses must implement to_dict()"
+        ):
             TestExpression().to_dict()
 
     def test_query_options_defaults(self):
