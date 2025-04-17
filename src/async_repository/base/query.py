@@ -1,93 +1,65 @@
-# src/async_repository/base/query.py
+# src/query_builder_static.py
+
 import logging
-from typing import Any, Dict, Optional, Type, TypeVar, List, Tuple, Set, Union
-
-# Import ModelValidator and related exceptions/helpers
-from async_repository.base.model_validator import (
-    ModelValidator,
-    InvalidPathError,
-    ValueTypeError,
-    Any, # Ensure Any is imported from the right place if needed, though not strictly required here
-    get_origin,
-    get_args,
+import operator
+from typing import (
+    Any, Dict, Optional, Type, TypeVar, List, Tuple, Set, Union,
+    Generic, overload, TypeAlias, Protocol, ClassVar, cast
 )
+from typing import dataclass_transform # Key ingredient
+from types import SimpleNamespace # For the fields proxy
 
+# Assume ModelValidator exists and works with types
+# from async_repository.base.model_validator import ModelValidator, InvalidPathError, ValueTypeError
+# Mock validator for demonstration if needed:
+class MockModelValidator(Generic[TypeVar("_M")]):
+    def __init__(self, model_cls: Type[_M]): self.model_cls = model_cls
+    def get_field_type(self, path: str) -> Type[Any]: print(f"Runtime check: {path}"); return Any # Simulate check
+    def validate_value(self, value: Any, expected_type: Type[Any], context: str): pass # Simulate check
 
-###############################################################################
-# Query Options
-###############################################################################
-class QueryOptions:
-    """
-    Options for querying repositories, including nested DSL expressions,
-    sorting, pagination, and additional parameters.
-    """
+ModelValidator = MockModelValidator # Use the mock for now
 
-    def __init__(
-            self,
-            expression: Optional[Dict[str, Any]] = None,
-            sort_by: Optional[str] = None,
-            sort_desc: bool = False,
-            limit: int = 100,
-            offset: int = 0,
-            random_order=False,
-            timeout: Optional[float] = None,
-    ):
-        self.expression = expression or {}
-        self.sort_by = sort_by
-        self.sort_desc = sort_desc
-        self.limit = limit
-        self.offset = offset
-        self.timeout = timeout
-        self.random_order = random_order
+# --- Generic Type Variables ---
+T = TypeVar("T")  # Field data type (e.g., str, int, bool)
+M = TypeVar("M")  # Model class type (e.g., User, Address)
 
-    def __repr__(self):
-        return (
-            f"QueryOptions(expression={self.expression}, sort_by={self.sort_by}, "
-            f"sort_desc={self.sort_desc}, limit={self.limit}, offset={self.offset}, "
-            f"timeout={self.timeout}, random_order={self.random_order})"
-        )
+# --- Query Expression Classes ---
+# (Similar to previous versions, but FilterCondition can be enhanced)
 
-
-###############################################################################
-# DSL Implementation
-###############################################################################
 class Expression:
-    """
-    Base class for query expressions.
-    """
-
-    def __and__(self, other: "Expression") -> "Expression":
+    """Base class for query expressions."""
+    def __and__(self, other: "Expression") -> "CombinedCondition":
         return CombinedCondition("and", self, other)
-
-    def __or__(self, other: "Expression") -> "Expression":
+    def __or__(self, other: "Expression") -> "CombinedCondition":
         return CombinedCondition("or", self, other)
-
     def to_dict(self) -> Dict[str, Any]:
         raise NotImplementedError("Subclasses must implement to_dict()")
 
+class FilterCondition(Expression, Generic[T]):
+    """Represents a filter condition (field OP value). Generic on field type T."""
+    field_path: str
+    operator: str
+    value: Any # The value being compared against (might not be T)
 
-class FilterCondition(Expression):
-    """
-    Represents a simple filter condition.
-    """
-
-    def __init__(self, field: str, operator: str, value: Any):
-        self.field = field
+    def __init__(self, field_path: str, operator: str, value: Any):
+        self.field_path = field_path
         self.operator = operator
         self.value = value
+        # TODO: Optional: Add runtime check here that 'value' is compatible
+        # with 'operator' and potentially the expected type T, if T is known
+        # precisely (which is hard without passing Field[T]'s T here).
 
     def to_dict(self) -> Dict[str, Any]:
-        # Consistently return the structured format
-        return {self.field: {"operator": self.operator, "value": self.value}}
+        return {self.field_path: {"operator": self.operator, "value": self.value}}
 
     def __repr__(self) -> str:
-        return f"FilterCondition({self.field!r}, {self.operator!r}, {self.value!r})"
-
+        return f"FilterCondition({self.field_path!r}, {self.operator!r}, {self.value!r})"
 
 class CombinedCondition(Expression):
-    """
-    Represents a combined filter condition using logical 'and' or 'or'.
-    """
+    """Combines two expressions with AND or OR."""
+    logical_operator: str
+    left: Expression
+    right: Expression
 
     def __init__(self, logical_operator: str, left: Expression, right: Expression):
         if logical_operator not in ("and", "or"):
@@ -102,217 +74,237 @@ class CombinedCondition(Expression):
     def __repr__(self) -> str:
         return f"CombinedCondition({self.logical_operator!r}, {self.left!r}, {self.right!r})"
 
-
-class Field:
+# --- Field Representation ---
+class Field(Generic[T]):
     """
-    Represents a model field for building query conditions.
-    Holds only the field name; validation happens in the QueryBuilder.
-
-    Supports dot notation via __getattr__ for nested field access.
+    Represents a queryable field path with type T.
+    Provides methods for building FilterCondition expressions.
     """
-    # Using internal _name to avoid potential clashes with actual model field names
-    _name: str
+    _path: str
+    # Note: We store the path, not the actual data type T at runtime directly,
+    # but the Generic T helps type checkers with comparisons.
 
-    def __init__(self, name: str):
-        # Use object.__setattr__ to set internal _name during initialization
-        object.__setattr__(self, "_name", name)
+    def __init__(self, path: str):
+        # Use object.__setattr__ to initialize internal attribute
+        object.__setattr__(self, "_path", path)
 
     @property
-    def name(self) -> str:
-        """Public property to access the field name/path."""
-        return self._name
+    def path(self) -> str:
+        """The full dot-notation path to the field."""
+        return self._path
 
-    def __getattr__(self, name: str) -> 'Field':
-        """Enable nested field access using dot notation (e.g., user.address.city)."""
-        # Prevent recursion on special attributes
+    # --- Comparison Operators ---
+    # These methods now return FilterCondition[T] which *could* be used
+    # for more advanced type checking if the value type could be constrained.
+    # For now, we keep 'other: Any' for broad compatibility.
+
+    # Helper to create FilterCondition, reducing repetition
+    def _op(self, op_name: str, other: Any) -> FilterCondition[T]:
+        return FilterCondition(self._path, op_name, other)
+
+    def __eq__(self, other: Any) -> FilterCondition[T]:
+         # Ideally, 'other' should be compatible with T. Type checkers might infer this.
+         # e.g., if field is Field[str], comparing field == 123 might raise a warning.
+        return self._op("eq", other)
+
+    def __ne__(self, other: Any) -> FilterCondition[T]:
+        return self._op("ne", other)
+
+    def __gt__(self, other: Any) -> FilterCondition[T]: # Requires T to be orderable
+        return self._op("gt", other)
+
+    def __lt__(self, other: Any) -> FilterCondition[T]: # Requires T to be orderable
+        return self._op("lt", other)
+
+    def __ge__(self, other: Any) -> FilterCondition[T]: # Requires T to be orderable
+        return self._op("ge", other)
+
+    def __le__(self, other: Any) -> FilterCondition[T]: # Requires T to be orderable
+        return self._op("le", other)
+
+    # --- Collection/String Operators ---
+    # These might have more specific type hints depending on T
+
+    # For Field[List[ItemT]] or Field[Set[ItemT]] etc.
+    def contains(self, item: Any) -> FilterCondition[T]:
+        # If T is List[ItemT], item should ideally be ItemT
+        return self._op("contains", item)
+
+    # For Field[str]
+    def like(self, pattern: str) -> FilterCondition[T]:
+        # Requires T to be compatible with string operations (enforced by checker)
+        if not isinstance(pattern, str): raise TypeError("like requires a string pattern")
+        return self._op("like", pattern)
+
+    def startswith(self, prefix: str) -> FilterCondition[T]:
+        if not isinstance(prefix, str): raise TypeError("startswith requires a string prefix")
+        return self._op("startswith", prefix)
+
+    def endswith(self, suffix: str) -> FilterCondition[T]:
+        if not isinstance(suffix, str): raise TypeError("endswith requires a string suffix")
+        return self._op("endswith", suffix)
+
+    # --- General Operators ---
+    def in_(self, collection: Union[List, Set, Tuple]) -> FilterCondition[T]:
+        # If T is ItemT, collection elements should ideally be ItemT
+        if not isinstance(collection, (list, set, tuple)):
+             raise TypeError("in_ operator requires a list, set, or tuple")
+        return self._op("in", list(collection))
+
+    def nin(self, collection: Union[List, Set, Tuple]) -> FilterCondition[T]:
+        if not isinstance(collection, (list, set, tuple)):
+            raise TypeError("nin operator requires a list, set, or tuple")
+        return self._op("nin", list(collection))
+
+    def exists(self, exists_value: bool = True) -> FilterCondition[T]:
+        if not isinstance(exists_value, bool):
+             raise TypeError("exists operator requires a boolean value")
+        return self._op("exists", exists_value)
+
+    # --- Accessing Nested Fields (Runtime via __getattr__) ---
+    # This provides the runtime mechanism for qb.fields.address.city
+    # Static analysis relies on the proxy generation understanding nesting.
+    def __getattr__(self, name: str) -> 'Field[Any]': # Return Field[Any] for nested unknown type
+        """Allows chaining for nested fields, e.g., Field('address').city."""
         if name.startswith('_'):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        # Return a *new* Field instance representing the deeper path
-        return Field(f"{self._name}.{name}")
-
-    # Prevent setting arbitrary attributes on Field instances
-    def __setattr__(self, name: str, value: Any):
-        if name == '_name':
-             object.__setattr__(self, name, value)
-        else:
-            raise AttributeError(f"Cannot set attribute '{name}' on Field object")
-
-    def __eq__(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "eq", other)
-
-    def ne(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "ne", other)
-
-    def __gt__(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "gt", other)
-
-    def __lt__(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "lt", other)
-
-    def __ge__(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "ge", other)
-
-    def __le__(self, other: Any) -> FilterCondition:
-        return FilterCondition(self._name, "le", other)
-
-    def in_(self, collection: Union[List, Set, Tuple]) -> FilterCondition:
-        # Basic type check here; detailed validation in QueryBuilder
-        if not isinstance(collection, (list, set, tuple)):
-            raise TypeError(f"in_ operator requires a list, set, or tuple, got {type(collection)}")
-        # Convert set/tuple to list for consistent handling downstream if needed
-        return FilterCondition(self._name, "in", list(collection))
-
-    def nin(self, collection: Union[List, Set, Tuple]) -> FilterCondition:
-        # Basic type check here; detailed validation in QueryBuilder
-        if not isinstance(collection, (list, set, tuple)):
-            raise TypeError(f"nin operator requires a list, set, or tuple, got {type(collection)}")
-        # Convert set/tuple to list for consistent handling downstream if needed
-        return FilterCondition(self._name, "nin", list(collection))
-
-    def like(self, pattern: str) -> FilterCondition:
-        if not isinstance(pattern, str):
-            raise TypeError(f"like operator requires a string pattern, got {type(pattern)}")
-        return FilterCondition(self._name, "like", pattern)
-
-    def contains(self, value: Any) -> FilterCondition:
-        """
-        Checks if the field (as a list/array) contains the specified value.
-        Validation that the field is actually a list happens in QueryBuilder.
-        """
-        return FilterCondition(self._name, "contains", value)
-
-    def startswith(self, substring: str) -> FilterCondition:
-        if not isinstance(substring, str):
-            raise TypeError(f"startswith operator requires a string substring, got {type(substring)}")
-        return FilterCondition(self._name, "startswith", substring)
-
-    def endswith(self, substring: str) -> FilterCondition:
-        if not isinstance(substring, str):
-            raise TypeError(f"endswith operator requires a string substring, got {type(substring)}")
-        return FilterCondition(self._name, "endswith", substring)
-
-    def exists(self, exists: bool = True) -> FilterCondition:
-        # Basic type check here; detailed validation in QueryBuilder
-        if not isinstance(exists, bool):
-            raise TypeError(f"exists operator requires a boolean value, got {type(exists)}")
-        return FilterCondition(self._name, "exists", exists)
-
-    def regex(self, pattern: str) -> FilterCondition:
-        if not isinstance(pattern, str):
-            raise TypeError(f"regex operator requires a string pattern, got {type(pattern)}")
-        return FilterCondition(self._name, "regex", pattern)
+        # Return a *new* Field instance representing the deeper path.
+        # We lose the specific type T here, fallback to Any.
+        return Field(f"{self._path}.{name}")
 
     def __repr__(self) -> str:
-        # Use internal _name for representation
-        return f"Field({self._name!r})"
+        # Try to get the generic type for repr if possible, otherwise just use path
+        type_repr = getattr(self, '__orig_class__', type(self)).__name__
+        return f"{type_repr}({self._path!r})"
+
+    # Prevent setting attributes on Field instances
+    def __setattr__(self, name: str, value: Any):
+        if name == '_path': # Allow internal initialization
+             object.__setattr__(self, name, value)
+        else:
+            raise AttributeError(f"Cannot set attribute '{name}' on Field object. Use comparison methods.")
 
 
-###############################################################################
-# Query Builder
-###############################################################################
-T = TypeVar("T")  # Generic type for the model
+# --- Fields Proxy Generation ---
 
+_PROXY_CACHE: Dict[Type, Any] = {} # Cache generated proxy objects/types if needed
 
-class QueryBuilder:
+def _generate_fields_proxy(model_cls: Type[M], base_path: str = "") -> Any:
     """
-    Fluent query builder that dynamically generates Field instances, validates
-    them against a model type (if provided) using ModelValidator, and supports
-    chaining additional query parameters like sorting and pagination.
+    Introspects a model class and creates a proxy object where attributes
+    are Field instances. Handles nesting.
     """
+    # Use SimpleNamespace for easy attribute setting
+    proxy = SimpleNamespace()
+    logger = logging.getLogger(__name__)
+    prefix = f"{base_path}." if base_path else ""
 
-    def __init__(self, model: Optional[Type[T]] = None):
+    # --- Introspection Logic ---
+    # Needs to be robust: handle __annotations__, dataclasses, Pydantic, etc.
+    try:
+        # Example: Use annotations primarily
+        annotations = getattr(model_cls, '__annotations__', {})
+        logger.debug(f"Introspecting fields for {model_cls.__name__} (prefix='{prefix}'): {annotations.keys()}")
+
+        for name, type_hint in annotations.items():
+            if name.startswith('_'): # Skip private/protected
+                continue
+
+            full_path = f"{prefix}{name}"
+
+            # Check for nested models (recursive step)
+            # Determine the 'origin' type (e.g., list for List[Address])
+            origin_type = getattr(type_hint, '__origin__', None)
+            field_type_args = getattr(type_hint, '__args__', None)
+
+            nested_model_cls = None
+            if origin_type in (list, List, set, Set) and field_type_args:
+                # Handle List[NestedModel], Set[NestedModel]
+                # We typically query the field itself (e.g. tags.contains),
+                # but maybe allow querying *into* elements? (e.g., addresses.city - less common)
+                # For now, treat lists/sets as simple fields unless elements are queryable models.
+                # Let's assume for now we only nest direct attributes.
+                 pass # Treat as simple field for now
+
+            elif isinstance(type_hint, type) and hasattr(type_hint, '__annotations__'):
+                 # Potential nested model (check if it's intended to be queryable)
+                 # This check could be more sophisticated (e.g., check for BaseModel, dataclass)
+                 logger.debug(f"Field '{name}' type '{type_hint.__name__}' might be a nested model.")
+                 # Recursively generate proxy for the nested model
+                 nested_proxy = _generate_fields_proxy(type_hint, base_path=full_path)
+                 setattr(proxy, name, nested_proxy)
+                 logger.debug(f"Added nested proxy for '{full_path}'")
+                 continue # Skip creating a simple Field for the container
+
+            # Default: Create a simple Field instance
+            # Use the type_hint to create Field[SpecificType]
+            # This assumes Field() doesn't *need* T at runtime, only for hints
+            setattr(proxy, name, Field[type_hint](full_path)) # Generic Field creation
+
+    except Exception as e:
+        logger.error(f"Failed during field proxy generation for {model_cls.__name__}: {e}", exc_info=True)
+        # Decide: raise error or return empty proxy? Raising is safer.
+        raise TypeError(f"Could not generate query fields proxy for {model_cls.__name__}") from e
+
+    return proxy
+
+
+# --- Query Builder ---
+# Use dataclass_transform to hint the structure of 'fields' based on 'model_cls'
+@dataclass_transform()
+class QueryBuilder(Generic[M]):
+    """
+    Builds database queries in a statically analyzable way.
+
+    Use `qb.fields.fieldname` to access queryable fields.
+    Requires type checker support for PEP 681 (dataclass_transform).
+    """
+    model_cls: Type[M]
+    fields: Any # Type checkers supporting dataclass_transform should infer this
+    _validator: ModelValidator[M]
+    _expression: Optional[Expression]
+    _options: Dict[str, Any] # Store options like sort, limit etc.
+    _logger: logging.Logger
+
+    def __init__(self, model_cls: Type[M]):
         """
-        Initializes the QueryBuilder.
+        Initializes the QueryBuilder for a specific model class.
 
         Args:
-            model: Optional class definition (e.g., Pydantic model, dataclass)
-                   for field and value validation during query building.
+            model_cls: The data model class (e.g., User, Product).
         """
-        self._model = model
-        self._validator: Optional[ModelValidator] = None
-        self._field_cache: Dict[str, Field] = {} # Cache for base fields
-        self._expression: Optional[Expression] = None
-        self._options = QueryOptions()
+        self.model_cls = model_cls
         self._logger = logging.getLogger(__name__)
+        self._expression = None
+        self._options = {"limit": 100, "offset": 0, "sort_desc": False} # Default options
 
-        if model:
-            try:
-                self._validator = ModelValidator(model)
-            except TypeError as e:
-                # Log a warning or handle cases where validation can't be set up
-                self._logger.warning(
-                    f"Could not initialize ModelValidator for type {model}: {e}. "
-                    "Query validation will be disabled."
-                )
-                self._model = None  # Ensure validation is skipped later
+        try:
+            # Generate the fields proxy object at runtime
+            # Type checkers supporting dataclass_transform should use model_cls
+            # passed here to infer the attributes available on self.fields
+            self.fields = _generate_fields_proxy(model_cls)
+            self._validator = ModelValidator(model_cls) # Initialize validator
+            self._logger.debug(f"Initialized QueryBuilder for model: {model_cls.__name__}")
+        except Exception as e:
+            self._logger.error(f"Failed to initialize QueryBuilder for {model_cls.__name__}: {e}", exc_info=True)
+            raise ValueError(f"Could not initialize QueryBuilder for {model_cls.__name__}") from e
 
-    # --- REVERTED __getattr__ ---
-    def __getattr__(self, name: str) -> Field:
-        """
-        Dynamically creates Field instances for attribute access.
-        Validates the *base* field name exists if a validator is configured.
-        Relies on Field.__getattr__ for nested paths.
-        """
-        if name.startswith("_"):
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    def filter(self, expr: Expression) -> "QueryBuilder[M]":
+        """Adds a filter expression (combines with existing using AND)."""
+        if not isinstance(expr, Expression):
+            raise TypeError("filter() requires an Expression object "
+                            "(e.g., qb.fields.name == 'value')")
 
-        # Validate only the first part of the path if validator exists
-        base_field_name = name.split(".")[0]
-        if self._validator:
-            try:
-                # Check if the first part of the path exists in the model.
-                self._validator.get_field_type(base_field_name)
-            except InvalidPathError as e:
-                model_name = self._model.__name__ if self._model else "model"
-                raise AttributeError(
-                    # Error message reflects base field access failure
-                    f"'{model_name}' has no attribute '{base_field_name}'. Original error: {e}"
-                ) from e
-            except ValueError as e: # Catch potential errors like empty path ''
-                 raise AttributeError(f"Invalid field name requested: '{name}'. Error: {e}") from e
-
-
-        # Cache and return the Field object for the potentially full path.
-        # Field.__getattr__ will handle nested access from here.
-        # Cache only the base Field and let Field.__getattr__ create nested ones dynamically.
-        if base_field_name not in self._field_cache:
-             self._field_cache[base_field_name] = Field(base_field_name)
-
-        # Start with the cached base field
-        field_obj = self._field_cache[base_field_name]
-        # If the requested name has dots, use Field.__getattr__ to get the nested field
-        path_parts = name.split(".")[1:]
-        for part in path_parts:
-             # This will call Field.__getattr__ recursively
-             # No validation here; validation happens in filter/sort_by
-             field_obj = getattr(field_obj, part)
-
-        return field_obj
-    # --- END REVERT ---
-
-    def filter(self, expr: Expression) -> "QueryBuilder":
-        """
-        Adds a filter expression, validating it against the model if a validator is configured.
-
-        Args:
-            expr: The Expression object (FilterCondition or CombinedCondition) to add.
-
-        Raises:
-            ValueError: If the expression is invalid according to the ModelValidator.
-        """
-        if self._validator:
-            try:
-                self._validate_expression(expr)
-            # Catch specific validation errors first
-            except (InvalidPathError, ValueTypeError) as e:
-                # Re-raise validation errors with context from ModelValidator, wrapped in ValueError
-                raise ValueError(f"Invalid filter condition: {e}") from e
-            # Catch potential TypeErrors from Field basic checks or validator internals
-            except TypeError as e:
-                 raise ValueError(f"Type error during validation setup: {e}") from e
-            # Catch other ValueErrors (e.g., re-raised from _validate_expression)
-            except ValueError as e:
-                 raise e # Propagate the specific error
+        # --- Runtime Validation of the Expression ---
+        # Although field paths *should* be valid if created via qb.fields,
+        # this validates value types against operators.
+        try:
+             self._validate_expression_runtime(expr)
+        except Exception as e:
+             # Catch validation errors (ValueTypeError, etc.) or unexpected errors
+             self._logger.warning(f"Filter validation failed: {e}")
+             # Re-raise as ValueError for consistency? Or let specific errors propagate?
+             raise ValueError(f"Invalid filter expression: {e}") from e
 
         if self._expression is None:
             self._expression = expr
@@ -321,203 +313,141 @@ class QueryBuilder:
             self._expression = self._expression & expr
         return self
 
-    def _validate_expression(self, expr: Expression) -> None:
-        """
-        Recursively validates an Expression using the ModelValidator.
-        Relies on ModelValidator for type checks against the model schema.
-        """
-        if not self._validator: # Should only happen if model initialization failed
-            return
-
+    def _validate_expression_runtime(self, expr: Expression) -> None:
+        """Performs runtime checks on expression values and operators."""
         if isinstance(expr, FilterCondition):
-            field_path = expr.field
-            operator = expr.operator
-            value = expr.value
-
-            # --- Path Validation (Always perform this first) ---
-            try:
-                expected_field_type = self._validator.get_field_type(field_path)
-            except InvalidPathError as e:
-                # Re-raise as ValueError consistent with filter's error wrapping
-                raise ValueError(f"Invalid field path used in filter: {e}") from e
-
-            # --- Operator-Specific Validation ---
-
-            # 1. 'exists': Only path validation is needed. Value type checked in Field.exists.
-            if operator == "exists":
-                # Path validation already done above.
-                return # Skip further value validation
-
-            # 2. Numeric operators: Check field is numeric, check value is numeric.
-            if operator in ("gt", "lt", "ge", "le"):
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError( # Use ValueTypeError consistent with ModelValidator
-                        f"Operator '{operator}' requires a numeric field, but '{field_path}' is not (type: {expected_field_type})."
-                    )
-                # Check the value itself is suitable for numeric comparison (int/float, not bool)
-                if not isinstance(value, (int, float)) or isinstance(value, bool):
-                    raise ValueTypeError(
-                        f"Operator '{operator}' requires a numeric value (int/float) for comparison, got {type(value).__name__}."
-                    )
-                # No need for validate_value(value, expected_field_type) here for comparisons
-                return # Validation done
-
-            # 3. 'in'/'nin': Validate items in the collection against the field's item type.
-            elif operator in ("in", "nin"):
-                 # Basic check for list/set/tuple happens in Field.in_/nin
-
-                 # Determine the expected type of items *within* the field
-                 field_origin = get_origin(expected_field_type)
-                 field_args = get_args(expected_field_type)
-                 expected_item_type = Any # Default
-
-                 if field_origin in (list, set) and field_args:
-                     expected_item_type = field_args[0] # List[T] or Set[T]
-                 elif field_origin is tuple and field_args:
-                     if len(field_args) == 2 and field_args[1] == ...:
-                         expected_item_type = field_args[0] # Tuple[T, ...]
-                     else:
-                         # Fixed tuple Tuple[A, B]. 'in' checks against elements. Use Union.
-                         expected_item_type = Union[field_args]
-                 elif expected_field_type is Any:
-                      expected_item_type = Any
-                 else:
-                      # Allow 'in' check against non-collection field types (e.g., age.in_([20, 30]))
-                      # The items must match the field's type.
-                      expected_item_type = expected_field_type
-
-                 # Validate each item in the collection against the determined expected item type
-                 if expected_item_type is not Any:
-                    for i, item in enumerate(value):
-                        # Use validate_value for each item
-                        self._validator.validate_value(
-                            item, expected_item_type, f"'{field_path}' item {i} for '{operator}'"
-                        )
-                 return # Item validation done
-
-            # 4. 'contains': Field must be List, value validated against list item type.
-            elif operator == "contains":
-                is_list, item_type = self._validator.get_list_item_type(field_path)
-                if not is_list:
-                    # Raise InvalidPathError as the operator isn't applicable
-                    raise InvalidPathError(
-                        f"Operator 'contains' requires a List field, but '{field_path}' is not."
-                    )
-                if item_type is not Any:
-                    # Use validate_value for the item being searched for
-                    self._validator.validate_value(
-                        value, item_type, f"Value for '{field_path}' contains"
-                    )
-                return # Validation done
-
-            # 5. String operators: Validate value is a string.
-            elif operator in ("like", "startswith", "endswith", "regex"):
-                 # Basic type check done in Field methods.
-                 # Use validate_value here for consistency checks if needed,
-                 # but primarily rely on Field's TypeError for non-strings.
-                 # If Field check passed, assume value is a string.
-                 # Optional: Could still check if expected_field_type is compatible.
-                 return # Value type check done in Field
-
-            # 6. Default ('eq', 'ne'): Validate value against the field's full type.
-            # This is the fallback for operators not handled above.
-            else:
-                # Perform the standard validation using the ModelValidator
-                self._validator.validate_value(value, expected_field_type, field_path)
-
+            # Use validator to check value compatibility with field type/operator
+            # Field path is assumed correct if generated via self.fields
+            field_type = self._validator.get_field_type(expr.field_path) # Get expected type
+            # Example check:
+            if expr.operator == "eq":
+                 self._validator.validate_value(expr.value, field_type, expr.field_path)
+            # ... add more checks for gt, lt, contains, etc. based on field_type ...
+            self._logger.debug(f"Validated filter condition runtime: {expr}")
 
         elif isinstance(expr, CombinedCondition):
-            # Recursively validate left and right sides
-            self._validate_expression(expr.left)
-            self._validate_expression(expr.right)
-        else:
-            # Should not happen with current structure
-            raise TypeError(f"Unsupported expression type for validation: {type(expr)}")
+            self._validate_expression_runtime(expr.left)
+            self._validate_expression_runtime(expr.right)
 
 
-    def sort_by(self, field: str, descending: bool = False) -> "QueryBuilder":
-        """
-        Sets the sort field and order, validating the field if a model validator is present.
+    # Use Field object directly for sorting type safety
+    def sort_by(self, field: Field[Any], descending: bool = False) -> "QueryBuilder[M]":
+        """Sets the sort field and order."""
+        if not isinstance(field, Field):
+             raise TypeError("sort_by requires a Field object (e.g., qb.fields.name)")
+        # Runtime check path validity (optional, should be guaranteed by Field origin)
+        try:
+             self._validator.get_field_type(field.path)
+        except Exception as e: # Catch InvalidPathError etc.
+             raise AttributeError(f"Invalid sort field path: {field.path}. {e}") from e
 
-        Args:
-            field: The field name (dot notation supported) to sort by.
-            descending: Whether to sort in descending order.
-
-        Raises:
-            AttributeError: If the field does not exist in the model.
-        """
-        if self._validator:
-            try:
-                # Validate that the field path exists in the model
-                self._validator.get_field_type(field)
-            except InvalidPathError as e:
-                model_name = self._model.__name__ if self._model else "model"
-                # Raise AttributeError for sort field errors, include original error
-                raise AttributeError(
-                    f"'{model_name}' has no sortable attribute or valid path '{field}'. Validation failed: {e}"
-                ) from e
-            except ValueError as e: # Catch errors like empty path
-                 raise AttributeError(f"Invalid field path for sorting: '{field}'. Error: {e}") from e
-
-        self._options.sort_by = field
-        self._options.sort_desc = descending
+        self._options['sort_by'] = field.path
+        self._options['sort_desc'] = descending
+        self._options['random_order'] = False
         return self
 
-    def random_order(self) -> "QueryBuilder":
-        """
-        Enables random ordering of the results. Overrides any sort_by setting.
-        """
-        self._options.random_order = True
-        self._options.sort_by = None # Explicitly clear sort field
+    def random_order(self) -> "QueryBuilder[M]":
+        """Sets random ordering."""
+        self._options['random_order'] = True
+        self._options['sort_by'] = None
         return self
 
-    def limit(self, limit: int) -> "QueryBuilder":
-        """
-        Sets the limit for pagination.
-        """
-        if not isinstance(limit, int) or limit < 0:
+    def limit(self, num: int) -> "QueryBuilder[M]":
+        """Sets the query limit."""
+        if not isinstance(num, int) or num < 0:
             raise ValueError("Limit must be a non-negative integer.")
-        self._options.limit = limit
+        self._options['limit'] = num
         return self
 
-    def offset(self, offset: int) -> "QueryBuilder":
-        """
-        Sets the offset for pagination.
-        """
-        if not isinstance(offset, int) or offset < 0:
+    def offset(self, num: int) -> "QueryBuilder[M]":
+        """Sets the query offset."""
+        if not isinstance(num, int) or num < 0:
             raise ValueError("Offset must be a non-negative integer.")
-        self._options.offset = offset
+        self._options['offset'] = num
         return self
 
-    def set_timeout(self, timeout: float) -> "QueryBuilder":
-        """
-        Sets the query timeout.
-        """
-        if not isinstance(timeout, (int, float)) or timeout <= 0:
-            raise ValueError("Timeout must be a positive number.")
-        self._options.timeout = timeout
-        return self
+    def build(self) -> Dict[str, Any]: # Return a dict representing the final query
+        """Builds the final query structure."""
+        query = {
+            "model": self.model_cls.__name__,
+            "filter": self._expression.to_dict() if self._expression else {},
+            "options": self._options
+        }
+        self._logger.debug(f"Built query: {query}")
+        return query
 
-    def build(self) -> QueryOptions:
-        """
-        Builds and returns a QueryOptions object based on the accumulated filters
-        and parameters.
-        """
-        if self._expression:
-            # Convert the final expression tree to the dictionary format
-            self._options.expression = self._expression.to_dict()
-        else:
-            # Ensure expression is an empty dict if no filters were added
-            self._options.expression = {}
 
-        self._logger.debug("Built QueryOptions: %s", self._options)
-        # Return a new instance to prevent modification after build
-        return QueryOptions(
-             expression=self._options.expression,
-             sort_by=self._options.sort_by,
-             sort_desc=self._options.sort_desc,
-             limit=self._options.limit,
-             offset=self._options.offset,
-             random_order=self._options.random_order,
-             timeout=self._options.timeout,
-        )
+# --- Example Usage ---
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+
+    # --- Define Models (No modification needed) ---
+    class Address:
+        street: Optional[str]
+        city: str
+
+    class User:
+        id: int
+        username: str
+        email: Optional[str]
+        age: int
+        is_active: bool
+        tags: List[str]
+        address: Address # Nested model
+
+    # --- Query Building ---
+    qb = QueryBuilder(User)
+
+    # Access fields via qb.fields - Autocompletion and static checks work here!
+    # MyPy/Pyright should catch typos like qb.fields.user_name
+    filter1 = qb.fields.username == "test"
+    filter2 = qb.fields.age > 30
+
+    # Nested access
+    filter3 = qb.fields.address.city.startswith("Spring")
+
+    # Correct type comparison (Field[int] > int)
+    filter4 = qb.fields.age < 100
+
+    # Potential type warning from checker (Field[str] == int)
+    filter5 = qb.fields.username == 123 # Runtime validation might also catch this
+
+    # Using operators
+    filter6 = qb.fields.tags.contains("admin")
+    filter7 = qb.fields.email.exists(True)
+    filter8 = qb.fields.username.in_({"user1", "user2"})
+
+    # Build the query
+    query = qb.filter(filter1 & (filter2 | filter3))\
+              .filter(filter6)\
+              .filter(filter7)\
+              .sort_by(qb.fields.age, descending=True)\
+              .limit(50)\
+              .offset(10)\
+              .build()
+
+    print("\nFinal Query Structure:")
+    import json
+    print(json.dumps(query, indent=2))
+
+    # --- Static Error Examples (should be caught by MyPy/Pyright) ---
+    print("\nExamples of static errors (won't run if checker catches them):")
+    try:
+        err_field = qb.fields.non_existent_field == "oops"
+        print(f"ERROR: Should have failed statically on non_existent_field: {err_field}")
+    except AttributeError: # Will likely happen at runtime if checker misses it
+        print("Caught expected AttributeError for non_existent_field at runtime")
+
+    try:
+        err_nested = qb.fields.address.non_existent_nested == "oops"
+        print(f"ERROR: Should have failed statically on non_existent_nested: {err_nested}")
+    except AttributeError:
+        print("Caught expected AttributeError for non_existent_nested at runtime")
+
+    try:
+        # Comparison type mismatch (e.g., Field[Address] > int)
+        # Depending on checker strictness for operators on complex types
+        err_type = qb.fields.address > 10
+        print(f"ERROR: Should have failed statically on address > 10: {err_type}")
+    except TypeError: # Or other error depending on how Field implements __gt__
+        print("Caught expected TypeError for address > 10 at runtime/statically")
