@@ -1,9 +1,0 @@
--r requirements.in
--r requirements-dev.in
-pytest>=7.1.1
-pytest-cov>=3.0.0
-mongomock-motor
-pytest
-pytest-asyncio
-pytest-subtests
-pytest-postgresql

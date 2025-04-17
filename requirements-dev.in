@@ -1,9 +1,16 @@
 -r requirements.in
 black>=22.3.0
-isort>=5.10.1
-mypy>=0.942
 flake8>=4.0.1
+isort>=5.10.1
+mongomock-motor
+mypy>=0.942
 pip-tools>=6.6.0
 pre-commit>=2.18.0
+pytest
+pytest-asyncio
+pytest-cov>=3.0.0
+pytest-postgresql
+pytest-subtests
+pytest>=7.1.1
 ruff
 toml
