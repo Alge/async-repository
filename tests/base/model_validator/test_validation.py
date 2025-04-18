@@ -1,3 +1,4 @@
+# tests/base/model_validator/test_validation.py
 import pytest
 from typing import Any, Dict, List, Optional, Union, Set, Tuple
 
@@ -8,8 +9,9 @@ from async_repository.base.model_validator import (
 )
 
 from .conftest import (
-    Inner, PydanticInner
+    Inner, PydanticInner, GenericModel, MyInt
 )
+
 
 # --- validate_value Tests ---
 
@@ -24,7 +26,7 @@ from .conftest import (
     ("pydantic_validator", {1.0, 2.5}, Set[float]),
 ])
 def test_validate_value_basic_types_success(
-    request, validator_fixture, value, expected_type
+        request, validator_fixture, value, expected_type
 ):
     """Test successful validation for basic types and collections."""
     validator = request.getfixturevalue(validator_fixture)
@@ -42,7 +44,7 @@ def test_validate_value_basic_types_success(
     ("pydantic_validator", {1, 2}, Set[float]),
 ])
 def test_validate_value_basic_types_failure(
-    request, validator_fixture, value, expected_type
+        request, validator_fixture, value, expected_type
 ):
     """Test validation failure for basic types and collections."""
     validator = request.getfixturevalue(validator_fixture)
@@ -168,7 +170,8 @@ def test_validate_value_class(nested_validator, pydantic_validator):
 
     # Invalid: dict with wrong type for field
     invalid_dict_wrong_type = {"val": "not an int", "description": "test"}
-    with pytest.raises(ValueTypeError, match="expected type int"):
+    # Update the expected error message pattern to match the actual format
+    with pytest.raises(ValueTypeError, match="expected.+int.+got.+'not an int'.+str"):
         validator.validate_value(invalid_dict_wrong_type, inner_type)
 
     # Invalid: wrong type entirely
@@ -202,16 +205,13 @@ def test_validate_value_class(nested_validator, pydantic_validator):
     # Invalid: dict missing required field ('p_val')
     invalid_pydantic_dict_missing = {}
     with pytest.raises(ValueTypeError, match="missing required field 'p_val'"):
-        validator_p.validate_value(
-            invalid_pydantic_dict_missing, pydantic_inner_type
-        )
+        validator_p.validate_value(invalid_pydantic_dict_missing, pydantic_inner_type)
 
     # Invalid: dict with wrong type
     invalid_pydantic_dict_wrong_type = {"p_val": "not a float"}
-    with pytest.raises(ValueTypeError, match="expected type float"):
-        validator_p.validate_value(
-            invalid_pydantic_dict_wrong_type, pydantic_inner_type
-        )
+    # Update the expected error message pattern to match the actual format
+    with pytest.raises(ValueTypeError, match="expected.+float.+got.+'not a float'"):
+        validator_p.validate_value(invalid_pydantic_dict_wrong_type, pydantic_inner_type)
 
 
 def test_validate_value_none_for_non_optional(simple_validator):
@@ -250,7 +250,7 @@ def test_validate_value_for_path_invalid_path(nested_validator):
 
 
 def test_validate_value_for_path_invalid_value(
-    nested_validator, pydantic_validator
+        nested_validator, pydantic_validator
 ):
     """Test validate_value_for_path raises ValueTypeError for bad value."""
     with pytest.raises(ValueTypeError, match="expected type int"):
@@ -263,3 +263,35 @@ def test_validate_value_for_path_invalid_value(
         pydantic_validator.validate_value_for_path(
             "typed_dict.some_key", "not an int"
         )
+
+
+# --- New Tests for Generic Type Safety ---
+
+def test_generic_type_enforcement():
+    """Test the generic type enforcement capabilities."""
+    from .conftest import SimpleClass, PydanticModel, GenericModel, MyInt
+
+    # Create validators with specific model types
+    simple_validator = ModelValidator[SimpleClass](SimpleClass)
+    pydantic_validator = ModelValidator[PydanticModel](PydanticModel)
+
+    # Test with a generic model
+    string_generic = ModelValidator[GenericModel[str]](GenericModel[str])
+    int_generic = ModelValidator[GenericModel[int]](GenericModel[int])
+
+    # Validate type-specific fields
+    string_generic.validate_value_for_path("data", "test string")
+    int_generic.validate_value_for_path("data", 42)
+
+    # These should fail due to type mismatch
+    with pytest.raises(ValueTypeError):
+        string_generic.validate_value_for_path("data", 123)
+
+    with pytest.raises(ValueTypeError):
+        int_generic.validate_value_for_path("data", "not an int")
+
+    # MyInt should work with int (since it's a NewType of int)
+    # This demonstrates how the validator handles custom type subclasses
+    my_int_val = MyInt(10)  # Create a MyInt value
+    string_generic.validate_value_for_path("index", my_int_val)
+    int_generic.validate_value_for_path("index", my_int_val)

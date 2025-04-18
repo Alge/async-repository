@@ -1,3 +1,4 @@
+# tests/base/model_validator/conftest.py
 import pytest
 from typing import (
     Any, Dict, List, Optional, Union, Set, Tuple, Type, NewType, TypeVar, Generic
@@ -91,19 +92,20 @@ class GenericModel(BaseModel, Generic[T]):
 ])
 def validator(request):
     """Provides a ModelValidator instance for various model types."""
-    return ModelValidator(request.param)
+    model_cls = request.param
+    return ModelValidator[model_cls](model_cls)  # Specify the generic type
 
 
 @pytest.fixture
 def simple_validator():
-    return ModelValidator(SimpleClass)
+    return ModelValidator[SimpleClass](SimpleClass)  # Specify the generic type
 
 
 @pytest.fixture
 def nested_validator():
-    return ModelValidator(NestedClass)
+    return ModelValidator[NestedClass](NestedClass)  # Specify the generic type
 
 
 @pytest.fixture
 def pydantic_validator():
-    return ModelValidator(PydanticModel)
+    return ModelValidator[PydanticModel](PydanticModel)  # Specify the generic type

@@ -1,3 +1,4 @@
+# tests/base/model_validator/test_field_type.py
 import pytest
 from typing import Any, Dict, List, Optional, Union, Set, Tuple
 
@@ -82,7 +83,7 @@ def test_get_field_type_any(pydantic_validator, nested_validator):
 
 def test_get_field_type_forward_ref():
     """Test resolving forward references."""
-    validator = ModelValidator(Node)
+    validator = ModelValidator[Node](Node)  # Specify generic type
     assert validator.get_field_type("value") is int
     assert validator.get_field_type("next_node") is Optional[Node]
     assert validator.get_field_type("next_node.value") is int
@@ -118,7 +119,7 @@ def test_get_field_type_invalid_dict_key_type(pydantic_validator):
     class DictWithIntKey(BaseModel):
         data: Dict[int, str]
 
-    validator = ModelValidator(DictWithIntKey)
+    validator = ModelValidator[DictWithIntKey](DictWithIntKey)  # Specify generic type
     # This path is invalid because '123' is not a string key,
     # even though the key type is int. Dot notation implies string keys.
     with pytest.raises(InvalidPathError, match="non-string key type"):

@@ -1,3 +1,4 @@
+# tests/base/model_validator/test_field_properties.py
 import pytest
 from typing import Any, Optional, Union
 from pydantic import BaseModel
@@ -40,7 +41,7 @@ def test_is_field_numeric_optional_union(nested_validator):
         union_num_str: Union[int, str]
         union_str_bool: Union[str, bool]
 
-    validator = ModelValidator(NumericOptions)
+    validator = ModelValidator[NumericOptions](NumericOptions)  # Specify generic type
     assert validator.is_field_numeric("opt_int") is True
     assert validator.is_field_numeric("opt_str") is False
     assert validator.is_field_numeric("union_num_none") is True
