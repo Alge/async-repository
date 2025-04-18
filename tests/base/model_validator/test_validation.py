@@ -5,46 +5,51 @@ from typing import Any, Dict, List, Optional, Union, Set, Tuple
 from async_repository.base.model_validator import (
     ModelValidator,
     InvalidPathError,
-    ValueTypeError
+    ValueTypeError,
 )
 
-from .conftest import (
-    Inner, PydanticInner, GenericModel, MyInt
-)
+from .conftest import Inner, PydanticInner, GenericModel, MyInt
 
 
 # --- validate_value Tests ---
 
-@pytest.mark.parametrize("validator_fixture, value, expected_type", [
-    ("simple_validator", "hello", str),
-    ("simple_validator", 123, int),
-    ("simple_validator", True, bool),
-    ("pydantic_validator", 3.14, float),  # Access via nested.p_val
-    ("pydantic_validator", ["a", "b"], List[str]),
-    ("pydantic_validator", {"key": 1}, Dict[str, int]),
-    ("pydantic_validator", (1, "a", True), Tuple[int, str, bool]),
-    ("pydantic_validator", {1.0, 2.5}, Set[float]),
-])
+
+@pytest.mark.parametrize(
+    "validator_fixture, value, expected_type",
+    [
+        ("simple_validator", "hello", str),
+        ("simple_validator", 123, int),
+        ("simple_validator", True, bool),
+        ("pydantic_validator", 3.14, float),  # Access via nested.p_val
+        ("pydantic_validator", ["a", "b"], List[str]),
+        ("pydantic_validator", {"key": 1}, Dict[str, int]),
+        ("pydantic_validator", (1, "a", True), Tuple[int, str, bool]),
+        ("pydantic_validator", {1.0, 2.5}, Set[float]),
+    ],
+)
 def test_validate_value_basic_types_success(
-        request, validator_fixture, value, expected_type
+    request, validator_fixture, value, expected_type
 ):
     """Test successful validation for basic types and collections."""
     validator = request.getfixturevalue(validator_fixture)
     validator.validate_value(value, expected_type)  # Should not raise
 
 
-@pytest.mark.parametrize("validator_fixture, value, expected_type", [
-    ("simple_validator", 123, str),
-    ("simple_validator", "hello", int),
-    ("simple_validator", "true", bool),
-    ("pydantic_validator", "3.14", float),
-    ("pydantic_validator", ["a", 1], List[str]),
-    ("pydantic_validator", {"key": "1"}, Dict[str, int]),
-    ("pydantic_validator", (1, "a", 1), Tuple[int, str, bool]),
-    ("pydantic_validator", {1, 2}, Set[float]),
-])
+@pytest.mark.parametrize(
+    "validator_fixture, value, expected_type",
+    [
+        ("simple_validator", 123, str),
+        ("simple_validator", "hello", int),
+        ("simple_validator", "true", bool),
+        ("pydantic_validator", "3.14", float),
+        ("pydantic_validator", ["a", 1], List[str]),
+        ("pydantic_validator", {"key": "1"}, Dict[str, int]),
+        ("pydantic_validator", (1, "a", 1), Tuple[int, str, bool]),
+        ("pydantic_validator", {1, 2}, Set[float]),
+    ],
+)
 def test_validate_value_basic_types_failure(
-        request, validator_fixture, value, expected_type
+    request, validator_fixture, value, expected_type
 ):
     """Test validation failure for basic types and collections."""
     validator = request.getfixturevalue(validator_fixture)
@@ -211,7 +216,9 @@ def test_validate_value_class(nested_validator, pydantic_validator):
     invalid_pydantic_dict_wrong_type = {"p_val": "not a float"}
     # Update the expected error message pattern to match the actual format
     with pytest.raises(ValueTypeError, match="expected.+float.+got.+'not a float'"):
-        validator_p.validate_value(invalid_pydantic_dict_wrong_type, pydantic_inner_type)
+        validator_p.validate_value(
+            invalid_pydantic_dict_wrong_type, pydantic_inner_type
+        )
 
 
 def test_validate_value_none_for_non_optional(simple_validator):
@@ -223,6 +230,7 @@ def test_validate_value_none_for_non_optional(simple_validator):
 
 
 # --- validate_value_for_path Tests ---
+
 
 def test_validate_value_for_path_success(nested_validator, pydantic_validator):
     """Test successful validation using validate_value_for_path."""
@@ -244,28 +252,21 @@ def test_validate_value_for_path_success(nested_validator, pydantic_validator):
 def test_validate_value_for_path_invalid_path(nested_validator):
     """Test validate_value_for_path raises InvalidPathError for bad path."""
     with pytest.raises(InvalidPathError):
-        nested_validator.validate_value_for_path(
-            "outer.inner.non_existent", 100
-        )
+        nested_validator.validate_value_for_path("outer.inner.non_existent", 100)
 
 
-def test_validate_value_for_path_invalid_value(
-        nested_validator, pydantic_validator
-):
+def test_validate_value_for_path_invalid_value(nested_validator, pydantic_validator):
     """Test validate_value_for_path raises ValueTypeError for bad value."""
     with pytest.raises(ValueTypeError, match="expected type int"):
-        nested_validator.validate_value_for_path(
-            "outer.inner.val", "not an int"
-        )
+        nested_validator.validate_value_for_path("outer.inner.val", "not an int")
     with pytest.raises(ValueTypeError, match="expected type str"):
         pydantic_validator.validate_value_for_path("optional_list.0", 123)
     with pytest.raises(ValueTypeError, match="expected type int"):
-        pydantic_validator.validate_value_for_path(
-            "typed_dict.some_key", "not an int"
-        )
+        pydantic_validator.validate_value_for_path("typed_dict.some_key", "not an int")
 
 
 # --- New Tests for Generic Type Safety ---
+
 
 def test_generic_type_enforcement():
     """Test the generic type enforcement capabilities."""

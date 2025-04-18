@@ -116,8 +116,9 @@ def test_pull_from_nested_list():
         update.pull("departments.0.categories.0.items", 123)  # items contains strings
 
     with pytest.raises(TypeError):
-        update.pull("departments.0.categories.0.counts",
-                    "not-a-number")  # counts contains integers
+        update.pull(
+            "departments.0.categories.0.counts", "not-a-number"
+        )  # counts contains integers
 
     # Invalid field (not a list)
     with pytest.raises(TypeError):
@@ -144,7 +145,7 @@ def test_pull_with_nested_object_criteria():
         "name": "Products",
         "items": ["product1", "product2", "product3"],
         "tags": ["featured", "new", "sale"],
-        "counts": [10, 20, 30]
+        "counts": [10, 20, 30],
     }
 
     update = Update()

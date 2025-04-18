@@ -115,4 +115,6 @@ def test_increment_float_precision():
 
     result = update.build()
     assert "$inc" in result
-    assert result["$inc"]["value"] == pytest.approx(0.3)  # Account for floating point precision
+    assert result["$inc"]["value"] == pytest.approx(
+        0.3
+    )  # Account for floating point precision

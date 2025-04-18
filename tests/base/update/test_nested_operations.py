@@ -1,6 +1,15 @@
 import pytest
 from async_repository.base.update import Update
-from .conftest import User, Organization, NestedTypes, Inner, Outer, ComplexItem, Metadata, Address
+from .conftest import (
+    User,
+    Organization,
+    NestedTypes,
+    Inner,
+    Outer,
+    ComplexItem,
+    Metadata,
+    Address,
+)
 
 
 class TestNestedOperations:

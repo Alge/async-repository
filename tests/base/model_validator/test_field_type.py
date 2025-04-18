@@ -4,16 +4,17 @@ from typing import Any, Dict, List, Optional, Union, Set, Tuple
 
 from pydantic import BaseModel
 
-from async_repository.base.model_validator import (
-    ModelValidator,
-    InvalidPathError
-)
+from async_repository.base.model_validator import ModelValidator, InvalidPathError
 
 from .conftest import (
-    Inner, OuterDataClass, Node, PydanticInner,
+    Inner,
+    OuterDataClass,
+    Node,
+    PydanticInner,
 )
 
 # --- get_field_type Tests ---
+
 
 def test_get_field_type_simple(simple_validator):
     """Test getting types for simple fields."""
@@ -116,6 +117,7 @@ def test_get_field_type_invalid_list_index(simple_validator):
 
 def test_get_field_type_invalid_dict_key_type(pydantic_validator):
     """Test traversing Dict path with non-string key type."""
+
     class DictWithIntKey(BaseModel):
         data: Dict[int, str]
 

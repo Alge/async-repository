@@ -40,17 +40,17 @@ class User:
     score: Union[int, float]
 
     def __init__(
-            self,
-            name="",
-            age=0,
-            email=None,
-            active=True,
-            tags=None,
-            addresses=None,
-            metadata=None,
-            points=0,
-            balance=0.0,
-            score=0,
+        self,
+        name="",
+        age=0,
+        email=None,
+        active=True,
+        tags=None,
+        addresses=None,
+        metadata=None,
+        points=0,
+        balance=0.0,
+        score=0,
     ):
         self.name = name
         self.age = age

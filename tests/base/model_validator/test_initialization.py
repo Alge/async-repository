@@ -6,9 +6,11 @@ from async_repository.base.model_validator import ModelValidator
 
 # --- Initialization Tests ---
 
+
 def test_validator_initialization_success():
     """Test successful initialization with valid class types."""
     from .conftest import SimpleClass, SimpleDataClass, PydanticModel
+
     ModelValidator[SimpleClass](SimpleClass)  # Specify generic type
     ModelValidator[SimpleDataClass](SimpleDataClass)  # Specify generic type
     ModelValidator[PydanticModel](PydanticModel)  # Specify generic type
@@ -25,6 +27,7 @@ def test_validator_initialization_failure():
 
 
 # --- Additional Tests for Generic Behavior ---
+
 
 def test_validator_generic_type_constraints():
     """Test that the generic type parameter enforces type constraints."""

@@ -3,27 +3,28 @@ import pytest
 from typing import Any, Optional, Union
 from pydantic import BaseModel
 
-from async_repository.base.model_validator import (
-    ModelValidator,
-    InvalidPathError
-)
+from async_repository.base.model_validator import ModelValidator, InvalidPathError
 
 # --- is_field_numeric Tests ---
 
-@pytest.mark.parametrize("validator_fixture, field_path, expected", [
-    ("simple_validator", "age", True),
-    ("simple_validator", "name", False),
-    ("simple_validator", "is_active", False),  # bool is not numeric
-    ("nested_validator", "outer.inner.val", True),
-    ("nested_validator", "outer.items", False),  # List is not numeric
-    ("nested_validator", "config", False),  # Dict is not numeric
-    ("pydantic_validator", "count", True),
-    ("pydantic_validator", "nested.p_val", True),  # float
-    ("pydantic_validator", "union_field", True),  # Union[int, str] - int is numeric
-    ("pydantic_validator", "any_field", False),  # Any is not numeric
-    ("pydantic_validator", "simple_list", False),
-    ("pydantic_validator", "id", False),  # str
-])
+
+@pytest.mark.parametrize(
+    "validator_fixture, field_path, expected",
+    [
+        ("simple_validator", "age", True),
+        ("simple_validator", "name", False),
+        ("simple_validator", "is_active", False),  # bool is not numeric
+        ("nested_validator", "outer.inner.val", True),
+        ("nested_validator", "outer.items", False),  # List is not numeric
+        ("nested_validator", "config", False),  # Dict is not numeric
+        ("pydantic_validator", "count", True),
+        ("pydantic_validator", "nested.p_val", True),  # float
+        ("pydantic_validator", "union_field", True),  # Union[int, str] - int is numeric
+        ("pydantic_validator", "any_field", False),  # Any is not numeric
+        ("pydantic_validator", "simple_list", False),
+        ("pydantic_validator", "id", False),  # str
+    ],
+)
 def test_is_field_numeric_various_types(
     request, validator_fixture, field_path, expected
 ):
@@ -34,6 +35,7 @@ def test_is_field_numeric_various_types(
 
 def test_is_field_numeric_optional_union(nested_validator):
     """Test is_field_numeric for Optional and Union containing numeric."""
+
     class NumericOptions(BaseModel):
         opt_int: Optional[int]
         opt_str: Optional[str]
@@ -58,8 +60,10 @@ def test_is_field_numeric_invalid_path(simple_validator):
 
 # --- get_list_item_type Tests ---
 
+
 @pytest.mark.parametrize(
-    "validator_fixture, field_path, expected_is_list, expected_item_type", [
+    "validator_fixture, field_path, expected_is_list, expected_item_type",
+    [
         ("simple_validator", "name", False, Any),  # Not a list
         ("simple_validator", "age", False, Any),  # Not a list
         ("nested_validator", "outer.items", True, int),  # List[int]
@@ -73,11 +77,10 @@ def test_is_field_numeric_invalid_path(simple_validator):
         ("pydantic_validator", "any_field", False, Any),
         ("pydantic_validator", "tuple_field", False, Any),  # Tuple is not List
         ("pydantic_validator", "set_field", False, Any),  # Set is not List
-    ]
+    ],
 )
 def test_get_list_item_type_various_fields(
-    request, validator_fixture, field_path,
-    expected_is_list, expected_item_type
+    request, validator_fixture, field_path, expected_is_list, expected_item_type
 ):
     """Test get_list_item_type for various field types."""
     validator = request.getfixturevalue(validator_fixture)

@@ -116,8 +116,9 @@ def test_push_to_nested_list():
         update.push("departments.0.categories.0.items", 123)  # items contains strings
 
     with pytest.raises(TypeError):
-        update.push("departments.0.categories.0.counts",
-                    "not-a-number")  # counts contains integers
+        update.push(
+            "departments.0.categories.0.counts", "not-a-number"
+        )  # counts contains integers
 
     # Build and check the result
     result = update.build()

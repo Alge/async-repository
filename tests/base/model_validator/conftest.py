@@ -1,7 +1,17 @@
 # tests/base/model_validator/conftest.py
 import pytest
 from typing import (
-    Any, Dict, List, Optional, Union, Set, Tuple, Type, NewType, TypeVar, Generic
+    Any,
+    Dict,
+    List,
+    Optional,
+    Union,
+    Set,
+    Tuple,
+    Type,
+    NewType,
+    TypeVar,
+    Generic,
 )
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field as PydanticField
@@ -14,6 +24,7 @@ from async_repository.base.model_validator import (
 )
 
 # --- Test Models ---
+
 
 # Simple classes and dataclasses
 class SimpleClass:
@@ -71,8 +82,8 @@ class Node:
     next_node: Optional["Node"] = None
 
 
-MyInt = NewType('MyInt', int)
-T = TypeVar('T')
+MyInt = NewType("MyInt", int)
+T = TypeVar("T")
 
 
 class GenericModel(BaseModel, Generic[T]):
@@ -82,14 +93,17 @@ class GenericModel(BaseModel, Generic[T]):
 
 # --- Fixtures ---
 
-@pytest.fixture(params=[
-    SimpleClass,
-    SimpleDataClass,
-    NestedClass,
-    PydanticModel,
-    Node,
-    GenericModel[str]  # Test with a concrete generic type
-])
+
+@pytest.fixture(
+    params=[
+        SimpleClass,
+        SimpleDataClass,
+        NestedClass,
+        PydanticModel,
+        Node,
+        GenericModel[str],  # Test with a concrete generic type
+    ]
+)
 def validator(request):
     """Provides a ModelValidator instance for various model types."""
     model_cls = request.param
