@@ -1,71 +1,147 @@
+# tests/base/update/test_pull.py
+
 import pytest
-from async_repository.base.update import Update
-from .conftest import User, NestedTypes, Organization
+from typing import List, Type, Optional, TypeVar # Added for helper
+from async_repository.base.update import (
+    Update,
+    UpdateOperation,        # Import base operation class
+    PullOperation,          # Import specific operation class
+    InvalidPathError,       # Import specific exception
+    ValueTypeError,         # Import specific exception
+)
+from .conftest import User, NestedTypes, Organization, Address, Category # Added Category
+# Import the prepare_for_storage function to test serialized values
+from async_repository.base.utils import prepare_for_storage
+
+
+# --- Test Helper (Copied from previous response for completeness) ---
+OpT = TypeVar('OpT', bound=UpdateOperation)
+
+def find_operation(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str
+) -> Optional[OpT]:
+    """Finds the first operation of a specific type and field path."""
+    for op in operations:
+        if isinstance(op, op_type) and op.field_path == field_path:
+            return op
+    return None
+
+def assert_operation_present(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str,
+    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
+):
+    """Asserts that a specific operation exists and optionally checks its attributes."""
+    op = find_operation(operations, op_type, field_path)
+    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
+    if expected_attrs:
+        for attr, expected_value in expected_attrs.items():
+            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
+            actual_value = getattr(op, attr)
+            # Use pytest.approx for floats if needed
+            if isinstance(expected_value, float):
+                 import pytest
+                 assert actual_value == pytest.approx(expected_value), \
+                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+            else:
+                 # Special handling for comparing potentially serialized dicts/lists
+                 if isinstance(expected_value, (dict, list)) and isinstance(actual_value, (dict, list)):
+                     assert actual_value == expected_value, \
+                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+                 else:
+                     assert actual_value == expected_value, \
+                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+# --- End Test Helper ---
 
 
 def test_pull_with_type_validation():
-    """Test that pull operations are type validated."""
+    """Test that pull operations are type validated for literals."""
     update = Update(User)
 
-    # Valid pull
+    # Valid pull (literal string for List[str])
     update.pull("tags", "tag_to_remove")
 
-    # Invalid pull (wrong type)
-    with pytest.raises(TypeError):
-        update.pull("tags", 123)  # tags should contain strings
+    # Invalid pull (wrong type for list item) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'tags'"):
+        update.pull("tags", 123)  # tags list expects strings
 
-    # Invalid field (not a list)
-    with pytest.raises(TypeError):
+    # Invalid field (not a list) - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.pull("name", "value")  # name is str, not a list
 
-    # Non-existent field
-    with pytest.raises(TypeError):
+    # Non-existent field - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.pull("non_existent", "value")
+
+    result = update.build()
+    assert isinstance(result, list)
+    assert len(result) == 1 # Only the valid operation
+    assert_operation_present(result, PullOperation, "tags", {"value_or_condition": "tag_to_remove"})
 
 
 def test_pull_with_nested_fields():
-    """Test pull operations with nested list fields."""
+    """Test pull operations with nested list fields containing objects."""
     update = Update(User)
 
-    # Valid nested pull (assuming addresses is a list of Address objects)
-    address_dict = {"street": "123 Main St", "city": "Anytown", "zipcode": "12345"}
-    update.pull("addresses", address_dict)
+    # Valid nested pull - pulling an Address object using its dict representation
+    address_to_pull = Address("123 Main St", "Anytown", "12345")
+    # prepare_for_storage converts the Address object to a dict for matching/validation
+    serialized_address_dict = prepare_for_storage(address_to_pull)
+    update.pull("addresses", serialized_address_dict)
 
-    # Invalid nested pull (wrong type for list item)
-    with pytest.raises(TypeError):
-        # Assuming addresses expects Address objects, not ints
+    # Invalid nested pull (wrong type for list item) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'addresses'"):
+        # Pulling an int from a list expecting Address-like objects
         update.pull("addresses", 123)
 
-    # Non-existent nested field
-    with pytest.raises(TypeError):
+    # Non-existent nested field - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.pull("metadata.list_field", "value")  # Metadata has no list_field
+
+    result = update.build()
+    assert isinstance(result, list)
+    assert len(result) == 1 # Only the valid pull operation
+    assert_operation_present(result, PullOperation, "addresses", {"value_or_condition": serialized_address_dict})
 
 
 def test_pull_with_complex_types():
-    """Test pull operations with complex types in lists."""
+    """Test pull operations with various complex types in lists."""
     update = Update(NestedTypes)
 
-    # Valid pull from simple list
+    # Valid pull from simple list (List[int])
     update.pull("simple_list", 42)
 
-    # Valid pull from string list
+    # Valid pull from string list (List[str])
     update.pull("str_list", "string_to_remove")
 
-    # Valid pull from complex list
-    complex_item = {"name": "test", "value": 42}
-    update.pull("complex_list", complex_item)
+    # Valid pull from complex list (List[ComplexItem]) using a matching dictionary
+    complex_item_dict = {"name": "test", "value": 42}
+    # Validation ensures the dict matches the ComplexItem structure
+    update.pull("complex_list", complex_item_dict)
 
-    # Invalid pull from simple list (wrong type)
-    with pytest.raises(TypeError):
+    # Invalid pull from simple list (wrong type) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'simple_list'"):
         update.pull("simple_list", "not an int")
 
-    # Invalid pull from string list (wrong type)
-    with pytest.raises(TypeError):
+    # Invalid pull from string list (wrong type) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'str_list'"):
         update.pull("str_list", 42)
 
-    # Invalid pull from complex list (wrong structure)
-    with pytest.raises(TypeError):
-        update.pull("complex_list", {"name": 123, "value": "not an int"})
+    # Invalid pull from complex list (wrong structure/type) - Validator raises ValueTypeError
+    # This should now raise ValueTypeError because the dict is validated against ComplexItem
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'complex_list'"):
+        update.pull("complex_list", {"name": 123, "value": "not an int"}) # name should be str
+
+    result = update.build()
+    assert isinstance(result, list)
+    assert len(result) == 3 # Only valid pulls
+    assert_operation_present(result, PullOperation, "simple_list", {"value_or_condition": 42})
+    assert_operation_present(result, PullOperation, "str_list", {"value_or_condition": "string_to_remove"})
+    # The dict itself is stored as the condition
+    assert_operation_present(result, PullOperation, "complex_list", {"value_or_condition": complex_item_dict})
 
 
 def test_pull_without_model_type():
@@ -75,88 +151,96 @@ def test_pull_without_model_type():
     # These operations should work without errors
     update.pull("tags", "tag_to_remove")
     update.pull("numbers", 42)
-    update.pull("complex_items", {"key": "value"})
+    update.pull("complex_items", {"key": "value"}) # Criteria dict
     update.pull("nested.list", "nested item")
 
     # Build should succeed
     result = update.build()
-    assert "$pull" in result
-    assert result["$pull"]["tags"] == "tag_to_remove"
-    assert result["$pull"]["numbers"] == 42
-    assert result["$pull"]["complex_items"] == {"key": "value"}
-    assert result["$pull"]["nested.list"] == "nested item"
+    assert isinstance(result, list)
+    assert len(result) == 4
+    assert_operation_present(result, PullOperation, "tags", {"value_or_condition": "tag_to_remove"})
+    assert_operation_present(result, PullOperation, "numbers", {"value_or_condition": 42})
+    assert_operation_present(result, PullOperation, "complex_items", {"value_or_condition": {"key": "value"}})
+    assert_operation_present(result, PullOperation, "nested.list", {"value_or_condition": "nested item"})
 
 
 def test_pull_build_result():
-    """Test that pull operations build the correct MongoDB update document."""
+    """Test that pull operations build the correct agnostic operation list."""
     update = Update().pull("tags", "old_tag").pull("items", {"category": "removed"})
 
     result = update.build()
-    assert "$pull" in result
-    assert len(result["$pull"]) == 2
-    assert result["$pull"]["tags"] == "old_tag"
-    assert result["$pull"]["items"] == {"category": "removed"}
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert_operation_present(result, PullOperation, "tags", {"value_or_condition": "old_tag"})
+    # The criteria dict is passed through
+    assert_operation_present(result, PullOperation, "items", {"value_or_condition": {"category": "removed"}})
 
 
 def test_pull_from_nested_list():
-    """Test pulling specific values from lists within nested objects."""
-
+    """Test pulling specific literal values from lists within nested objects."""
     update = Update(Organization)
 
-    # Pull from a list within a nested object
+    # Pull from a list within a nested object (List[str])
     update.pull("departments.0.members", "member1")
 
-    # Pull from a deeply nested list
+    # Pull from a deeply nested list (List[str], List[str], List[int])
     update.pull("departments.0.categories.0.items", "item1")
     update.pull("departments.0.categories.0.tags", "tag1")
     update.pull("departments.0.categories.0.counts", 2)
 
-    # Invalid pull (wrong type)
-    with pytest.raises(TypeError):
-        update.pull("departments.0.categories.0.items", 123)  # items contains strings
+    # Invalid pull (wrong type) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'departments.0.categories.0.items'"):
+        update.pull("departments.0.categories.0.items", 123)  # items expects strings
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'departments.0.categories.0.counts'"):
         update.pull(
             "departments.0.categories.0.counts", "not-a-number"
-        )  # counts contains integers
+        )  # counts expects integers
 
-    # Invalid field (not a list)
-    with pytest.raises(TypeError):
-        update.pull("departments.0.name", "value")  # name is a string, not a list
+    # Invalid field (not a list) - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
+        update.pull("departments.0.name", "value")  # name is a string
 
-    # Invalid nested path
-    with pytest.raises(TypeError):
+    # Invalid nested path - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.pull("departments.0.categories.0.non_existent", "value")
 
     # Build and check the result
     result = update.build()
-    assert "$pull" in result
-    assert result["$pull"]["departments.0.members"] == "member1"
-    assert result["$pull"]["departments.0.categories.0.items"] == "item1"
-    assert result["$pull"]["departments.0.categories.0.tags"] == "tag1"
-    assert result["$pull"]["departments.0.categories.0.counts"] == 2
+    assert isinstance(result, list)
+    assert len(result) == 4 # Only valid pulls
+    assert_operation_present(result, PullOperation, "departments.0.members", {"value_or_condition": "member1"})
+    assert_operation_present(result, PullOperation, "departments.0.categories.0.items", {"value_or_condition": "item1"})
+    assert_operation_present(result, PullOperation, "departments.0.categories.0.tags", {"value_or_condition": "tag1"})
+    assert_operation_present(result, PullOperation, "departments.0.categories.0.counts", {"value_or_condition": 2})
 
 
 def test_pull_with_nested_object_criteria():
-    """Test pulling with complex criteria from nested lists."""
+    """Test pulling with dictionary criteria from nested lists."""
+    update = Update(Organization) # Using model for path validation
 
-    # Create a custom Organization with more complex data
-    category = {
-        "name": "Products",
-        "items": ["product1", "product2", "product3"],
-        "tags": ["featured", "new", "sale"],
-        "counts": [10, 20, 30],
-    }
+    # Pulling a category object based on a matching dict.
+    # This dict WILL be validated against Category structure because it's not an operator dict.
+    category_match = {"name": "Products"}
+    # Expect ValueTypeError because the dict is incomplete for a Category object.
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'departments.0.categories'"):
+        update.pull("departments.0.categories", category_match)
 
-    update = Update()
+    # Reset operations for the next check
+    update._operations = [] # Clear previous (failed) operation
 
-    # Pull using object criteria (simulating MongoDB query operators)
-    update.pull("departments.0.categories", {"name": "Products"})
-
-    # Pull using complex criteria
-    update.pull("items", {"$in": ["item1", "item2"]})
+    # Pull using complex criteria (MongoDB-like operators) - this bypasses item validation.
+    complex_criteria = {"$in": ["featured", "sale"]}
+    update.pull("departments.0.categories.0.tags", complex_criteria)
 
     result = update.build()
-    assert "$pull" in result
-    assert result["$pull"]["departments.0.categories"] == {"name": "Products"}
-    assert result["$pull"]["items"] == {"$in": ["item1", "item2"]}
+    assert isinstance(result, list)
+    # Only the operation with the operator dict ($in) should be present
+    assert len(result) == 1
+
+    # Check that the operator dictionary was passed through
+    assert_operation_present(result, PullOperation, "departments.0.categories.0.tags", {"value_or_condition": complex_criteria})
+
+    # Test invalid literal value type still fails validation against item type
+    with pytest.raises(ValueTypeError, match="Invalid value type for pull from 'departments.0.categories.0.tags'"):
+        update.pull("departments.0.categories.0.tags", 123) # tags expects strings, 123 is literal

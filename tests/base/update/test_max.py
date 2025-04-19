@@ -1,15 +1,64 @@
+# tests/base/update/test_max.py
+
 import pytest
-from async_repository.base.update import Update
+from typing import List, Type, Optional, TypeVar # Added for helper
+from async_repository.base.update import (
+    Update,
+    UpdateOperation,        # Import base operation class
+    MaxOperation,           # Import specific operation class
+    InvalidPathError,       # Import specific exception
+    ValueTypeError,         # Import specific exception
+)
 from .conftest import User, NumericModel, NestedTypes
 
 
+# --- Test Helper (can be defined here or imported from a common place) ---
+OpT = TypeVar('OpT', bound=UpdateOperation)
+
+def find_operation(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str
+) -> Optional[OpT]:
+    """Finds the first operation of a specific type and field path."""
+    for op in operations:
+        if isinstance(op, op_type) and op.field_path == field_path:
+            return op
+    return None
+
+def assert_operation_present(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str,
+    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
+):
+    """Asserts that a specific operation exists and optionally checks its attributes."""
+    op = find_operation(operations, op_type, field_path)
+    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
+    if expected_attrs:
+        for attr, expected_value in expected_attrs.items():
+            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
+            actual_value = getattr(op, attr)
+            # Use pytest.approx for floats if needed
+            if isinstance(expected_value, float):
+                 import pytest
+                 assert actual_value == pytest.approx(expected_value), \
+                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+            else:
+                 assert actual_value == expected_value, \
+                    f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+# --- End Test Helper ---
+
+
 def test_max_basic():
-    """Test basic max operation functionality."""
+    """Test basic max operation functionality builds the correct operation."""
     update = Update().max("score", 100)
 
     result = update.build()
-    assert "$max" in result
-    assert result["$max"]["score"] == 100
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert_operation_present(result, MaxOperation, "score", {"value": 100})
+
 
 
 def test_max_with_type_validation():
@@ -21,17 +70,23 @@ def test_max_with_type_validation():
     update.max("float_field", 99.9)
     update.max("union_numeric", 50)
 
-    # Invalid field (non-existent)
-    with pytest.raises(TypeError):
+    # Invalid field (non-existent) - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.max("non_existent", 100)
 
-    # Invalid field (non-numeric)
-    with pytest.raises(TypeError):
-        Update(User).max("name", 100)
+    # Invalid field (non-numeric) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError):
+        Update(User).max("name", 100) # name is not numeric
 
-    # Invalid value type
-    with pytest.raises(TypeError):
-        update.max("int_field", "100")
+    # Invalid value type (for the field) - Validator raises ValueTypeError
+    # THIS IS THE TEST CASE THAT FAILED - change expected exception
+    # Because the method itself checks if value is numeric first
+    with pytest.raises(TypeError, match="Max value must be numeric"): # <<<<<< CHANGED TO TypeError
+        update.max("int_field", "100") # Value "100" is str, caught by method check
+
+    # Invalid value type (for the operation itself) - Method raises TypeError
+    with pytest.raises(TypeError, match="Max value must be numeric"): # This one was already correct
+        update.max("int_field", "not a number") # Value passed to max must be numeric
 
 
 def test_max_with_nested_fields():
@@ -41,13 +96,13 @@ def test_max_with_nested_fields():
     # Valid nested max
     update.max("nested.inner.val", 100)
 
-    # Invalid nested field (non-existent)
-    with pytest.raises(TypeError):
+    # Invalid nested field (non-existent) - Validator raises InvalidPathError
+    with pytest.raises(InvalidPathError):
         update.max("nested.non_existent", 100)
 
-    # Invalid nested field (non-numeric)
-    with pytest.raises(TypeError):
-        update.max("str_list", 100)
+    # Invalid nested field (non-numeric) - Validator raises ValueTypeError
+    with pytest.raises(ValueTypeError):
+        update.max("str_list", 100) # str_list is not numeric
 
 
 def test_max_without_type_validation():
@@ -59,14 +114,15 @@ def test_max_without_type_validation():
     update.max("nested.field", 0)
 
     result = update.build()
-    assert "$max" in result
-    assert result["$max"]["score"] == 100
-    assert result["$max"]["value"] == 999.9
-    assert result["$max"]["nested.field"] == 0
+    assert isinstance(result, list)
+    assert len(result) == 3
+    assert_operation_present(result, MaxOperation, "score", {"value": 100})
+    assert_operation_present(result, MaxOperation, "value", {"value": 999.9})
+    assert_operation_present(result, MaxOperation, "nested.field", {"value": 0})
 
 
 def test_max_edge_cases():
-    """Test max with edge case values."""
+    """Test max with edge case values builds correct operations."""
     update = Update()
 
     # Negative values
@@ -79,6 +135,8 @@ def test_max_edge_cases():
     update.max("field3", 1e9)
 
     result = update.build()
-    assert result["$max"]["field1"] == -10
-    assert result["$max"]["field2"] == 0
-    assert result["$max"]["field3"] == 1e9
+    assert isinstance(result, list)
+    assert len(result) == 3
+    assert_operation_present(result, MaxOperation, "field1", {"value": -10})
+    assert_operation_present(result, MaxOperation, "field2", {"value": 0})
+    assert_operation_present(result, MaxOperation, "field3", {"value": 1e9})

@@ -1,5 +1,14 @@
+# tests/base/update/test_set.py
+
 import pytest
-from async_repository.base.update import Update
+from typing import List, Type, Optional, TypeVar # Added for helper
+from async_repository.base.update import (
+    Update,
+    UpdateOperation,        # Import base operation class
+    SetOperation,           # Import specific operation class
+    InvalidPathError,       # Import specific exception
+    ValueTypeError,         # Import specific exception
+)
 from .conftest import (
     User,
     ModelWithUnions,
@@ -9,9 +18,70 @@ from .conftest import (
     ComplexItem,
     Metadata,
 )
-from async_repository.base.model_validator import (
-    ValueTypeError,
-)  # Import custom exception
+# Import the prepare_for_storage function to test serialized values
+from async_repository.base.utils import prepare_for_storage
+
+
+# --- Test Helper (Copied from previous response for completeness) ---
+OpT = TypeVar('OpT', bound=UpdateOperation)
+
+def find_operation(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str
+) -> Optional[OpT]:
+    """Finds the first operation of a specific type and field path."""
+    for op in operations:
+        if isinstance(op, op_type) and op.field_path == field_path:
+            return op
+    return None
+
+# Helper to find *all* operations for a path
+def find_operations(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str
+) -> List[OpT]:
+    """Finds all operations of a specific type and field path."""
+    found = []
+    for op in operations:
+        if isinstance(op, op_type) and op.field_path == field_path:
+            found.append(op)
+    return found
+
+
+def assert_operation_present(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str,
+    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
+):
+    """Asserts that a specific operation exists and optionally checks its attributes."""
+    # This helper finds the *first* match, adjust test logic if last is needed
+    op = find_operation(operations, op_type, field_path)
+    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
+    if expected_attrs:
+        for attr, expected_value in expected_attrs.items():
+            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
+            actual_value = getattr(op, attr)
+            # Use pytest.approx for floats if needed
+            if isinstance(expected_value, float):
+                 import pytest
+                 assert actual_value == pytest.approx(expected_value), \
+                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+            else:
+                 # Special handling for comparing potentially serialized dicts/lists
+                 if isinstance(expected_value, (dict, list)) and isinstance(actual_value, (dict, list)):
+                     assert actual_value == expected_value, \
+                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+                 # Handle list comparison specifically for PushOperation 'items' attribute
+                 elif attr == 'items' and isinstance(expected_value, list) and isinstance(actual_value, list):
+                     assert actual_value == expected_value, \
+                        f"Attribute 'items' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+                 else:
+                     assert actual_value == expected_value, \
+                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+# --- End Test Helper ---
 
 
 def test_set_with_valid_types():
@@ -28,82 +98,71 @@ def test_set_with_valid_types():
     update.set(update.fields.metadata, valid_metadata_dict)
 
     result = update.build()
-    assert "$set" in result
-    assert len(result["$set"]) == 6
-    assert result["$set"]["metadata"] == valid_metadata_dict
+    assert isinstance(result, list)
+    assert len(result) == 6
+
+    assert_operation_present(result, SetOperation, "name", {"value": "John"})
+    assert_operation_present(result, SetOperation, "age", {"value": 30})
+    assert_operation_present(result, SetOperation, "email", {"value": "john@example.com"})
+    assert_operation_present(result, SetOperation, "active", {"value": False})
+    assert_operation_present(result, SetOperation, "tags", {"value": ["tag1", "tag2"]})
+    assert_operation_present(result, SetOperation, "metadata", {"value": valid_metadata_dict})
 
 
 def test_set_with_invalid_types():
-    """Test that invalid types in set operations raise TypeError or ValueTypeError."""
+    """Test that invalid types in set operations raise ValueTypeError."""
     update = Update(User)
 
-    # Our implementation wraps ValueTypeError as TypeError
-    with pytest.raises(TypeError):
-        update.set(update.fields.name, 123)
-
-    with pytest.raises(TypeError):
-        update.set(update.fields.age, "thirty")
-
-    with pytest.raises(TypeError):
-        update.set(update.fields.active, "yes")
-
-    with pytest.raises(TypeError):
-        update.set(update.fields.tags, "not-a-list")
-
-    with pytest.raises(TypeError):
-        update.set(update.fields.tags, [1, 2, 3])
-
-    with pytest.raises(TypeError):
-        update.set(update.fields.metadata, ["not", "a", "dict"])
-
-    # Test setting metadata with a dict missing required fields
-    # This validation happens within the recursive check for dicts matching classes
-    with pytest.raises(
-        TypeError, match="missing required field 'key1'"
-    ):
-        update.set(update.fields.metadata, {"key2": 123, "flag": False})
-
-    # Test setting metadata with a dict having wrong types for fields
-    with pytest.raises(
-        TypeError, match="expected type int"
-    ):
-        update.set(update.fields.metadata, {"key1": "val", "key2": "123", "flag": False})
+    with pytest.raises(ValueTypeError): update.set(update.fields.name, 123)
+    with pytest.raises(ValueTypeError): update.set(update.fields.age, "thirty")
+    with pytest.raises(ValueTypeError): update.set(update.fields.active, "yes")
+    with pytest.raises(ValueTypeError): update.set(update.fields.tags, "not-a-list")
+    with pytest.raises(ValueTypeError): update.set(update.fields.tags, [1, 2, 3]) # Item type mismatch
+    with pytest.raises(ValueTypeError): update.set(update.fields.metadata, ["not", "a", "dict"])
+    with pytest.raises(ValueTypeError, match="missing required field 'key1'"): update.set(update.fields.metadata, {"key2": 123, "flag": False})
+    with pytest.raises(ValueTypeError, match="expected type int"): update.set(update.fields.metadata, {"key1": "val", "key2": "123", "flag": False})
 
 
 def test_set_with_invalid_field():
     """Test that non-existent fields in set operations raise InvalidPathError."""
     update = Update(User)
-
-    with pytest.raises(TypeError):
-        update.set("non_existent_field", "value")
+    with pytest.raises(InvalidPathError): update.set("non_existent_field", "value")
 
 
 def test_set_with_optional_fields():
     """Test that None is accepted for Optional fields."""
     update = Update(User)
 
-    update.set(update.fields.email, None)
+    update.set(update.fields.email, None) # email is Optional[str]
     update.set(update.fields.email, "valid@example.com")
 
-    # Setting a required field to None should raise TypeError
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueTypeError, match="received None but expected str"):
         update.set(update.fields.name, None)
+
+    result = update.build()
+    assert len(result) == 2
+    email_ops = find_operations(result, SetOperation, "email")
+    assert len(email_ops) == 2
+    assert email_ops[0].value is None
+    assert email_ops[-1].value == "valid@example.com"
 
 
 def test_set_with_union_types():
     """Test that Union type validation works correctly."""
     update = Update(ModelWithUnions)
 
-    update.set(update.fields.field, "string value")
-    update.set(update.fields.field, 42)
-    update.set(update.fields.container, ["string", 42, True])
+    update.set(update.fields.field, "string value") # Union[str, int]
+    update.set(update.fields.field, 42)             # Union[str, int]
+    update.set(update.fields.container, ["string", 42, True]) # List[Union[str, int, bool]]
 
-    # Check that incompatible types raise TypeError
-    with pytest.raises(TypeError):
-        update.set(update.fields.field, [])
+    with pytest.raises(ValueTypeError): update.set(update.fields.field, [])
+    with pytest.raises(ValueTypeError): update.set(update.fields.container, ["string", 42, {}])
 
-    with pytest.raises(TypeError):
-        update.set(update.fields.container, ["string", 42, {}])
+    result = update.build()
+    assert len(result) == 3
+    field_ops = find_operations(result, SetOperation, "field")
+    assert field_ops[-1].value == 42
+    assert_operation_present(result, SetOperation, "container", {"value": ["string", 42, True]})
 
 
 def test_set_with_nested_fields():
@@ -114,72 +173,59 @@ def test_set_with_nested_fields():
     update.set(update.fields.metadata.key2, 99)
     update.set(update.fields.metadata.flag, False)
 
-    # Test invalid nested field type
-    with pytest.raises(
-        TypeError, match="expected type int"
-    ):
+    with pytest.raises(ValueTypeError, match="expected type int"):
         update.set(update.fields.metadata.key2, "not-an-int")
 
-    # Test invalid nested field path
-    with pytest.raises(
-        TypeError, match="does not exist in type Metadata"
-    ):
+    with pytest.raises(InvalidPathError, match="Field 'non_existent' does not exist in type Metadata"):
         update.set(update.fields.metadata.non_existent, "value")
 
-    # Test setting on non-existent parent
-    with pytest.raises(
-        TypeError, match="Field 'non_existent' does not exist"
-    ):
+    # Test setting on non-existent parent - Expect InvalidPathError
+    # Update the match pattern to reflect the actual error message
+    with pytest.raises(InvalidPathError, match="Field 'non_existent' does not exist in type User"): # <<<<< CORRECTED MATCH
         update.set("non_existent.field", "value")
+
+    result = update.build()
+    assert len(result) == 3 # Only valid ops
+    assert_operation_present(result, SetOperation, "metadata.key1", {"value": "value1"})
+    assert_operation_present(result, SetOperation, "metadata.key2", {"value": 99})
+    assert_operation_present(result, SetOperation, "metadata.flag", {"value": False})
 
 
 def test_set_with_complex_nested_validations():
     """Test validation with complex nested structures."""
     update = Update(NestedTypes)
 
+    # Valid operations
     update.set(update.fields.simple_list, [1, 2, 3])
     update.set(update.fields.str_list, ["a", "b", "c"])
     update.set(update.fields.dict_field, {"key": "value"})
 
-    inner = Inner(42)
-    outer = Outer(inner)
+    inner = Inner(42); outer = Outer(inner)
+    serialized_outer = prepare_for_storage(outer)
     update.set(update.fields.nested, outer)
     update.set(update.fields.nested, {"inner": {"val": 50}})
     update.set(update.fields.nested.inner, {"val": 60})
     update.set(update.fields.nested.inner.val, 70)
 
     item_instance = ComplexItem("test", 42)
+    serialized_item = prepare_for_storage(item_instance)
     update.set(update.fields.complex_list, [item_instance])
-    update.set(
-        update.fields.complex_list,
-        [{"name": "item1", "value": 100}, {"name": "item2", "value": 200}],
-    )
+    list_of_dicts = [{"name": "item1", "value": 100}, {"name": "item2", "value": 200}]
+    update.set(update.fields.complex_list, list_of_dicts)
 
-    # Invalid operations - expect TypeError now
-    with pytest.raises(
-        TypeError, match="expected type int"
-    ):
-        update.set(update.fields.simple_list, ["not", "integers"])
+    # Invalid operations - expect ValueTypeError from validator
+    with pytest.raises(ValueTypeError, match="expected type int"): update.set(update.fields.simple_list, ["not", "integers"])
+    with pytest.raises(ValueTypeError, match="expected type str"): update.set(update.fields.dict_field, {"key": 123})
+    with pytest.raises(ValueTypeError, match="expected type int"): update.set(update.fields.nested.inner.val, "not_int")
+    with pytest.raises(ValueTypeError, match="expected type str"): update.set(update.fields.complex_list, [{"name": 123, "value": 42}])
+    with pytest.raises(ValueTypeError, match="missing required field 'value'"): update.set(update.fields.complex_list, [{"name": "incomplete"}])
 
-    with pytest.raises(
-        TypeError, match="expected type str"
-    ):
-        update.set(update.fields.dict_field, {"key": 123})
+    result = update.build()
+    assert len(result) == 9
 
-    with pytest.raises(
-        TypeError, match="expected type int"
-    ):
-        update.set(update.fields.nested.inner.val, "not_int")
-
-    with pytest.raises(
-        TypeError, match="expected type str"
-    ):
-        update.set(update.fields.complex_list, [{"name": 123, "value": 42}])
-
-    with pytest.raises(
-        TypeError, match="missing required field 'value'"
-    ):
-        update.set(update.fields.complex_list, [{"name": "incomplete"}])
+    assert find_operations(result, SetOperation, "simple_list")[-1].value == [1, 2, 3]
+    assert find_operations(result, SetOperation, "nested.inner.val")[-1].value == 70
+    assert find_operations(result, SetOperation, "complex_list")[-1].value == list_of_dicts
 
 
 def test_set_without_model_type():
@@ -189,9 +235,12 @@ def test_set_without_model_type():
     update.set("any_field", "any_value")
     update.set("number", 123)
     update.set("nested.field", "nested value")
+    update.set("a_list", [1, {"a": 2}])
 
     result = update.build()
-    assert "$set" in result
-    assert result["$set"]["any_field"] == "any_value"
-    assert result["$set"]["number"] == 123
-    assert result["$set"]["nested.field"] == "nested value"
+    assert isinstance(result, list)
+    assert len(result) == 4
+    assert_operation_present(result, SetOperation, "any_field", {"value": "any_value"})
+    assert_operation_present(result, SetOperation, "number", {"value": 123})
+    assert_operation_present(result, SetOperation, "nested.field", {"value": "nested value"})
+    assert_operation_present(result, SetOperation, "a_list", {"value": [1, {"a": 2}]})

@@ -1,406 +1,303 @@
-import logging  # Use logging instead of warnings for consistency
+# src/async_repository/base/update.py
+
+import logging
+from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
+    List,
     Optional,
     Type,
     Union,
-    TypeVar,  # Added
-    Generic,  # Added
+    TypeVar,
+    Generic,
+    Literal,
+    get_origin,
+    get_args,
 )
-from typing import dataclass_transform  # Added
+from typing import dataclass_transform
 
 # Import the Field class and proxy generator
 from .query import Field, _generate_fields_proxy, GenericFieldsProxy
 
-# Import the validator
-from .model_validator import ValueTypeError, InvalidPathError, ModelValidator
+# Import the validator and exceptions
+from .model_validator import (
+    ValueTypeError,
+    InvalidPathError,
+    ModelValidator,
+    ValidationError,
+    _is_none_type,
+)
+# Import utils for serialization
+from .utils import prepare_for_storage
 
-# Generic Type Variable for the Model
+# --- Agnostic Update Operation Classes ---
+@dataclass
+class UpdateOperation: field_path: str
+@dataclass
+class SetOperation(UpdateOperation): value: Any
+@dataclass
+class UnsetOperation(UpdateOperation): pass
+@dataclass
+class IncrementOperation(UpdateOperation): amount: Union[int, float]
+@dataclass
+class MultiplyOperation(UpdateOperation): factor: Union[int, float]
+@dataclass
+class MinOperation(UpdateOperation): value: Union[int, float]
+@dataclass
+class MaxOperation(UpdateOperation): value: Union[int, float]
+@dataclass
+class PushOperation(UpdateOperation): items: List[Any]
+@dataclass
+class PopOperation(UpdateOperation): position: Literal[-1, 1]
+@dataclass
+class PullOperation(UpdateOperation): value_or_condition: Any
+# --- End Agnostic Update Operation Classes ---
+
 M = TypeVar("M")
 
-
-@dataclass_transform()  # Added decorator
+@dataclass_transform()
 class Update(Generic[M]):
-    """
-    A builder for MongoDB-style update instructions, providing static analysis
-    for field access via the `fields` attribute. Uses ModelValidator for runtime type validation.
-
-    Can be used in two ways:
-    1. With a model class: `Update(User)` - Provides static type checking and validation
-    2. Without a model: `Update()` - Allows flexible updates without validation
-    """
-
-    model_cls: Optional[Type[M]]  # Store model class, now Optional
-    fields: Any  # The fields proxy
-    _validator: Optional[ModelValidator]  # Validator
-    _operations: Dict[str, Dict[str, Any]]
-    _logger: logging.Logger  # Use logger
+    model_cls: Optional[Type[M]]
+    fields: Any
+    _validator: Optional[ModelValidator]
+    _operations: List[UpdateOperation]
+    _logger: logging.Logger
 
     def __init__(self, model_cls: Optional[Type] = None) -> None:
-        """
-        Initializes the Update builder for a specific model class.
-
-        Args:
-            model_cls: The data model class (e.g., User, Product).
-                       If None, allows updates without validation.
-        """
         self.model_cls = model_cls
-        self._operations = {}
+        self._operations = []
         self._logger = logging.getLogger(__name__)
-        self._validator = None  # Initialize validator attribute
-        self.fields = None  # Initialize fields
-
+        self._validator = None
+        self.fields = None
         if model_cls is not None:
             try:
-                # Generate fields proxy and initialize validator
                 self.fields = _generate_fields_proxy(model_cls)
                 self._validator = ModelValidator(model_cls)
-                self._logger.debug(
-                    f"Initialized Update builder for model: {model_cls.__name__}"
-                )
+                self._logger.debug(f"Initialized Update builder for model: {model_cls.__name__}")
             except Exception as e:
-                self._logger.error(
-                    f"Failed to initialize Update builder for {model_cls.__name__}: {e}",
-                    exc_info=True,
-                )
-                # Fallback to generic fields if model-specific initialization fails
+                self._logger.error(f"Failed to initialize Update builder for {model_cls.__name__}: {e}", exc_info=True)
                 self.fields = GenericFieldsProxy()
-                raise ValueError(
-                    f"Could not initialize Update builder for model {model_cls.__name__}"
-                ) from e
+                raise ValueError(f"Could not initialize Update builder for model {model_cls.__name__}") from e
         else:
-            # For model-less operation, use a generic fields proxy
             self.fields = GenericFieldsProxy()
             self._logger.debug("Initialized Update builder without model validation")
 
     def _get_field_path(self, field: Union[str, Field]) -> str:
-        """Helper method to extract field path from either string or Field object."""
-        if isinstance(field, str):
-            return field
-        elif hasattr(field, 'path'):
-            return field.path
-        else:
-            raise TypeError(
-                f"Expected field to be str or Field, got {type(field).__name__}")
+        if isinstance(field, str): return field
+        if isinstance(field, Field): return field.path
+        raise TypeError(f"Expected field to be str or Field, got {type(field).__name__}")
+
+    def _check_numeric_op_conflict(self, field_path: str):
+        for op in self._operations:
+            if isinstance(op, IncrementOperation) and op.field_path == field_path:
+                raise ValueError(f"Field '{field_path}' already has an increment/decrement operation. Multiple increment/decrement operations on the same field are not allowed.")
 
     # --- Update Methods ---
-
     def set(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
-        """Sets the value of a field ($set)."""
         field_path = self._get_field_path(field)
+        serialized_value = prepare_for_storage(value)
         if self._validator:
             try:
-                # Validate value against the type expected at this path
-                self._validator.validate_value_for_path(field_path, value)
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        # Use field_path as the key
-        self._operations.setdefault("set", {})[field_path] = value
+                self._validator.validate_value_for_path(field_path, serialized_value)
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during set: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for set on '{field_path}': {e}") from e
+        self._operations.append(SetOperation(field_path=field_path, value=serialized_value))
         return self
 
     def push(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
-        """Adds an element to an array field ($push)."""
         field_path = self._get_field_path(field)
+        serialized_item = prepare_for_storage(value)
         if self._validator:
             try:
                 is_list, item_type = self._validator.get_list_item_type(field_path)
-                if not is_list:
-                    raise InvalidPathError(
-                        f"Cannot $push to field '{field_path}': not a List or Optional[List]."
-                    )
-                # Validate the item being pushed if the list item type is known
+                if not is_list: raise InvalidPathError(f"Cannot push to field '{field_path}': not a List or Optional[List].")
                 if item_type is not Any:
                     try:
-                        self._validator.validate_value(
-                            value, item_type, f"item for $push to '{field_path}'"
-                        )
-                    except ValueTypeError as e:
-                        # Wrap error for context
-                        raise ValueTypeError(
-                            f"Invalid value for $push to '{field_path}': {e}"
-                        ) from e
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("push", {})[field_path] = value
+                        self._validator.validate_value(serialized_item, item_type, f"item for push to '{field_path}'")
+                    except ValueTypeError as e: raise ValueTypeError(f"Invalid value type for push to '{field_path}': {e}") from e
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during push: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for push on '{field_path}': {e}") from e
+        self._operations.append(PushOperation(field_path=field_path, items=[serialized_item]))
         return self
 
-    def pop(self, field: Union[str, Field[Any]], direction: int = 1) -> "Update[M]":
-        """Removes the first (-1) or last (1) element of an array field ($pop)."""
+    def pop(self, field: Union[str, Field[Any]], position: Literal[-1, 1] = 1) -> "Update[M]":
         field_path = self._get_field_path(field)
-        if direction not in (1, -1):
-            raise ValueError(
-                f"Direction for $pop must be 1 (last) or -1 (first), got {direction}."
-            )
+        if position not in (1, -1): raise ValueError(f"Position for pop must be 1 (last) or -1 (first), got {position}.")
         if self._validator:
             try:
-                # Check if the target field is actually a list
                 is_list, _ = self._validator.get_list_item_type(field_path)
-                if not is_list:
-                    raise InvalidPathError(
-                        f"Cannot $pop from field '{field_path}': not a List or Optional[List]."
-                    )
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("pop", {})[field_path] = direction
+                if not is_list: raise InvalidPathError(f"Cannot pop from field '{field_path}': not a List or Optional[List].")
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during pop: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for pop on '{field_path}': {e}") from e
+        self._operations.append(PopOperation(field_path=field_path, position=position))
         return self
 
     def unset(self, field: Union[str, Field[Any]]) -> "Update[M]":
-        """Removes a field ($unset)."""
         field_path = self._get_field_path(field)
         if self._validator:
             try:
-                # Check the path exists, even though we are removing it
-                # This prevents unsetting completely invalid paths accidentally
                 self._validator.get_field_type(field_path)
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        # MongoDB $unset value doesn't matter, often "" or 1
-        self._operations.setdefault("unset", {})[field_path] = ""
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during unset: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for unset on '{field_path}': {e}") from e
+        self._operations.append(UnsetOperation(field_path=field_path))
         return self
 
     def pull(self, field: Union[str, Field[Any]],
              value_or_condition: Any) -> "Update[M]":
-        """Removes instances of a value or condition from an array field ($pull)."""
+        """Adds a 'pull' operation (removes matching items from an array)."""
         field_path = self._get_field_path(field)
-        value = value_or_condition  # Rename for clarity inside method
+        is_operator_dict = isinstance(value_or_condition, dict) and any(
+            k.startswith("$") for k in value_or_condition.keys()
+        )
+
+        # Store the original value if it's an operator dict, otherwise serialize
+        value_to_store = (
+            value_or_condition
+            if is_operator_dict
+            else prepare_for_storage(value_or_condition)
+        )
+
         if self._validator:
             try:
                 is_list, item_type = self._validator.get_list_item_type(field_path)
                 if not is_list:
                     raise InvalidPathError(
-                        f"Cannot $pull from field '{field_path}': not a List or Optional[List]."
-                    )
-                # Check if the value is a condition dict (e.g. {"$gt": 5}) vs a literal value
-                is_operator_dict = isinstance(value, dict) and any(
-                    k.startswith("$") for k in value.keys()
+                        f"Cannot pull from field '{field_path}': not a List or Optional[List].")
+
+                # Validate the item unless it's an operator dict OR the item type is Any
+                # We NOW validate non-operator dictionaries against the item_type.
+                should_validate_item = (
+                        item_type is not Any
+                        and not is_operator_dict
                 )
-                # Only validate the literal value against the item type
-                if item_type is not Any and not is_operator_dict:
-                    try:
-                        # Validate the literal value against the expected list item type
-                        self._validator.validate_value(
-                            value, item_type, f"value for $pull from '{field_path}'"
-                        )
-                    except ValueTypeError as e:
-                        raise ValueTypeError(
-                            f"Invalid value for $pull from '{field_path}': {e}"
-                        ) from e
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("pull", {})[field_path] = value
-        return self
 
-    def increment(
-            self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
-    ) -> "Update[M]":
-        """
-        Increments a numeric field ($inc).
-
-        Only one increment or decrement operation is allowed per field in an update.
-        """
-        field_path = self._get_field_path(field)
-        if not isinstance(amount, (int, float)):
-            raise TypeError(
-                f"Increment amount must be numeric, got {type(amount).__name__}."
-            )
-
-        # Check if field already has an increment or decrement operation
-        current_inc = self._operations.get("inc", {})
-        if field_path in current_inc:
-            raise ValueError(
-                f"Field '{field_path}' already has an increment operation. "
-                f"Multiple increment/decrement operations on the same field are not allowed."
-            )
-
-        if self._validator:
-            try:
-                # Check if the target field is numeric
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError(
-                        f"Cannot $inc non-numeric field '{field_path}'.")
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-
-        # Set the increment
-        self._operations.setdefault("inc", {})[field_path] = amount
-        return self
-
-    def decrement(
-            self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
-    ) -> "Update[M]":
-        """
-        Decrements a numeric field (using $inc with negative amount).
-
-        Only one increment or decrement operation is allowed per field in an update.
-        """
-        # Validation happens within self.increment
-        if not isinstance(amount, (int, float)):
-            raise TypeError(
-                f"Decrement amount must be numeric, got {type(amount).__name__}."
-            )
-
-        field_path = self._get_field_path(field)
-
-        # Check if field already has an increment or decrement operation
-        current_inc = self._operations.get("inc", {})
-        if field_path in current_inc:
-            raise ValueError(
-                f"Field '{field_path}' already has an increment operation. "
-                f"Multiple increment/decrement operations on the same field are not allowed."
-            )
-
-        # Validate field through the increment method
-        if self._validator:
-            try:
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError(
-                        f"Cannot $inc non-numeric field '{field_path}'.")
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-
-        # Set the decrement (negative increment)
-        self._operations.setdefault("inc", {})[field_path] = -amount
-        return self
-
-    def min(self, field: Union[str, Field[Any]],
-            value: Union[int, float]) -> "Update[M]":
-        """Sets field to `value` if `value` is less than current field value ($min)."""
-        field_path = self._get_field_path(field)
-        if not isinstance(value, (int, float)):
-            raise TypeError(
-                f"$min requires a numeric value, got {type(value).__name__}."
-            )
-        if self._validator:
-            try:
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError(
-                        f"Cannot apply $min to non-numeric field '{field_path}'."
+                if should_validate_item:
+                    # Validate the value_to_store (which is serialized if not operator dict)
+                    self._validator.validate_value(
+                        value_to_store,
+                        item_type,
+                        f"value for pull from '{field_path}'"
                     )
+                # If it's an operator_dict, we skip the item validation.
+
             except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("min", {})[field_path] = value
+                # Need to wrap ValueTypeError raised during validation for context
+                if isinstance(e, ValueTypeError):
+                    raise ValueTypeError(
+                        f"Invalid value type for pull from '{field_path}': {e}") from e
+                else:
+                    raise e  # Re-raise InvalidPathError directly
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during pull: {e}",
+                                   exc_info=True)
+                raise RuntimeError(
+                    f"Unexpected validation error for pull on '{field_path}': {e}") from e
+
+        self._operations.append(
+            PullOperation(field_path=field_path, value_or_condition=value_to_store))
         return self
 
-    def max(self, field: Union[str, Field[Any]],
-            value: Union[int, float]) -> "Update[M]":
-        """Sets field to `value` if `value` is greater than current field value ($max)."""
+
+    def increment(self, field: Union[str, Field[Any]], amount: Union[int, float] = 1) -> "Update[M]":
         field_path = self._get_field_path(field)
-        if not isinstance(value, (int, float)):
-            raise TypeError(
-                f"$max requires a numeric value, got {type(value).__name__}."
-            )
+        if not isinstance(amount, (int, float)): raise TypeError(f"Increment amount must be numeric, got {type(amount).__name__}.")
+        self._check_numeric_op_conflict(field_path)
         if self._validator:
             try:
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError(
-                        f"Cannot apply $max to non-numeric field '{field_path}'."
-                    )
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("max", {})[field_path] = value
+                field_type = self._validator.get_field_type(field_path)
+                origin = get_origin(field_type); args = get_args(field_type)
+                is_field_numeric = False
+                if origin is Union: is_field_numeric = any(self._validator._is_single_type_numeric(a) for a in args if not _is_none_type(a))
+                else: is_field_numeric = self._validator._is_single_type_numeric(field_type)
+                if not is_field_numeric: raise ValueTypeError(f"Cannot increment non-numeric field '{field_path}' (type: {self._validator._get_type_name(field_type)}).")
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during increment: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for increment on '{field_path}': {e}") from e
+        self._operations.append(IncrementOperation(field_path=field_path, amount=amount))
         return self
 
-    def mul(self, field: Union[str, Field[Any]],
-            value: Union[int, float]) -> "Update[M]":
-        """Multiplies numeric field by `value` ($mul)."""
+    def decrement(self, field: Union[str, Field[Any]], amount: Union[int, float] = 1) -> "Update[M]":
         field_path = self._get_field_path(field)
-        if not isinstance(value, (int, float)):
-            raise TypeError(
-                f"$mul requires a numeric value, got {type(value).__name__}."
-            )
+        if not isinstance(amount, (int, float)): raise TypeError(f"Decrement amount must be numeric, got {type(amount).__name__}.")
+        # Use the logic of the increment method, including conflict check and validation
+        self.increment(field_path, -amount) # Pass negative value
+        return self # increment already appended the operation
+
+    def min(self, field: Union[str, Field[Any]], value: Union[int, float]) -> "Update[M]":
+        field_path = self._get_field_path(field)
+        if not isinstance(value, (int, float)): raise TypeError(f"Min value must be numeric, got {type(value).__name__}.")
         if self._validator:
             try:
-                if not self._validator.is_field_numeric(field_path):
-                    raise ValueTypeError(
-                        f"Cannot apply $mul to non-numeric field '{field_path}'."
-                    )
-            except (InvalidPathError, ValueTypeError) as e:
-                raise TypeError(str(e))
-        self._operations.setdefault("mul", {})[field_path] = value
+                field_type = self._validator.get_field_type(field_path)
+                origin = get_origin(field_type); args = get_args(field_type)
+                is_field_numeric = False
+                if origin is Union: is_field_numeric = any(self._validator._is_single_type_numeric(a) for a in args if not _is_none_type(a))
+                else: is_field_numeric = self._validator._is_single_type_numeric(field_type)
+                if not is_field_numeric: raise ValueTypeError(f"Cannot apply min to non-numeric field '{field_path}' (type: {self._validator._get_type_name(field_type)}).")
+                self._validator.validate_value(value, field_type, f"value for min on '{field_path}'")
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during min: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for min on '{field_path}': {e}") from e
+        self._operations.append(MinOperation(field_path=field_path, value=value))
+        return self
+
+    def max(self, field: Union[str, Field[Any]], value: Union[int, float]) -> "Update[M]":
+        field_path = self._get_field_path(field)
+        if not isinstance(value, (int, float)): raise TypeError(f"Max value must be numeric, got {type(value).__name__}.")
+        if self._validator:
+            try:
+                field_type = self._validator.get_field_type(field_path)
+                origin = get_origin(field_type); args = get_args(field_type)
+                is_field_numeric = False
+                if origin is Union: is_field_numeric = any(self._validator._is_single_type_numeric(a) for a in args if not _is_none_type(a))
+                else: is_field_numeric = self._validator._is_single_type_numeric(field_type)
+                if not is_field_numeric: raise ValueTypeError(f"Cannot apply max to non-numeric field '{field_path}' (type: {self._validator._get_type_name(field_type)}).")
+                self._validator.validate_value(value, field_type, f"value for max on '{field_path}'")
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during max: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for max on '{field_path}': {e}") from e
+        self._operations.append(MaxOperation(field_path=field_path, value=value))
+        return self
+
+    def mul(self, field: Union[str, Field[Any]], factor: Union[int, float]) -> "Update[M]":
+        field_path = self._get_field_path(field)
+        if not isinstance(factor, (int, float)): raise TypeError(f"Multiply factor must be numeric, got {type(factor).__name__}.")
+        if self._validator:
+            try:
+                field_type = self._validator.get_field_type(field_path)
+                origin = get_origin(field_type); args = get_args(field_type)
+                is_field_numeric = False
+                if origin is Union: is_field_numeric = any(self._validator._is_single_type_numeric(a) for a in args if not _is_none_type(a))
+                else: is_field_numeric = self._validator._is_single_type_numeric(field_type)
+                if not is_field_numeric: raise ValueTypeError(f"Cannot apply multiply to non-numeric field '{field_path}' (type: {self._validator._get_type_name(field_type)}).")
+            except (InvalidPathError, ValueTypeError) as e: raise e
+            except Exception as e:
+                self._logger.error(f"Unexpected validation error during mul: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected validation error for mul on '{field_path}': {e}") from e
+        self._operations.append(MultiplyOperation(field_path=field_path, factor=factor))
         return self
 
     # --- Build and Utility Methods ---
-
-    def _serialize_value(self, value: Any) -> Any:
-        """Recursively serializes values, converting known models (like Pydantic) to dicts."""
-        if hasattr(value, "model_dump") and callable(value.model_dump):  # Pydantic v2
-            # Try different arguments for broader compatibility
-            try:
-                return value.model_dump(mode="json", by_alias=True)
-            except TypeError:
-                try:
-                    return value.model_dump(by_alias=True)
-                except TypeError:
-                    return value.model_dump()  # Fallback
-        elif hasattr(value, "dict") and callable(value.dict):  # Pydantic v1
-            try:
-                return value.dict(by_alias=True)
-            except TypeError:
-                return value.dict()
-        elif isinstance(value, dict):
-            return {
-                self._serialize_value(k): self._serialize_value(v)
-                for k, v in value.items()
-            }
-        elif isinstance(value, (list, tuple, set)):
-            # Convert tuples/sets to lists for JSON compatibility if needed by backend
-            return [self._serialize_value(item) for item in value]
-        # Add handling for other types like datetime, ObjectId if necessary here
-        return value
-
-    def build(self) -> Dict[str, Any]:
-        """Constructs the final MongoDB update payload dictionary."""
-        mongo_operator_map = {
-            "set": "$set",
-            "push": "$push",
-            "pop": "$pop",
-            "unset": "$unset",
-            "pull": "$pull",
-            "inc": "$inc",
-            "min": "$min",
-            "max": "$max",
-            "mul": "$mul",
-        }
-        payload: Dict[str, Any] = {}
-        # Use a copy to avoid modifying internal state if build is called multiple times
-        current_operations = self._operations.copy()
-
-        for internal_op, data in current_operations.items():
-            mongo_op = mongo_operator_map.get(internal_op)
-            if not mongo_op:
-                self._logger.warning(
-                    f"Unknown internal op '{internal_op}' during build."
-                )
-                continue
-            # Ensure data is not empty before serializing and adding
-            if data:
-                # Serialize values within the data dict for the specific operator
-                serialized_data = {
-                    field_path: self._serialize_value(val)
-                    for field_path, val in data.items()
-                }
-                if serialized_data:  # Check again after serialization
-                    payload[mongo_op] = serialized_data
-        return payload
+    def build(self) -> List[UpdateOperation]:
+        return list(self._operations)
 
     def __repr__(self) -> str:
-        """Provides a developer-friendly string representation of the Update object."""
-        # Representing with .fields might be complex. Show the built structure instead.
         model_name = self.model_cls.__name__ if self.model_cls else "Anonymous"
-        built_ops = self.build()
-        if not built_ops:
-            return f"Update<{model_name}>{{}}"
-        # Format the built operations nicely
-        ops_repr = ", ".join(
-            f"{op}: {data!r}" for op, data in sorted(built_ops.items())
-        )
-        return f"Update<{model_name}>{{{ops_repr}}}"
+        if not self._operations: return f"Update<{model_name}>([])"
+        ops_repr = ", ".join(repr(op) for op in self._operations)
+        return f"Update<{model_name}>([{ops_repr}])"
 
-    def __bool__(self) -> bool:
-        """Returns True if any update operations have been added."""
-        return bool(self._operations)
-
-    def __len__(self) -> int:
-        """Returns the total number of fields being modified across all operations."""
-        return sum(len(data) for data in self._operations.values())
+    def __bool__(self) -> bool: return bool(self._operations)
+    def __len__(self) -> int: return len(self._operations)

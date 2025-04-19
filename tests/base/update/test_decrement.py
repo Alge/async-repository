@@ -1,6 +1,53 @@
+# tests/base/update/test_decrement.py
+
 import pytest
-from async_repository.base.update import Update
+from typing import List, Type, Optional, TypeVar # Added for helper
+from async_repository.base.update import (
+    Update,
+    UpdateOperation,        # Import base operation class
+    IncrementOperation,     # Import specific operation class
+    InvalidPathError,       # Import specific exception
+    ValueTypeError,         # Import specific exception
+)
 from .conftest import User, NumericModel, NestedTypes
+
+
+# --- Test Helper (can be defined here or imported from a common place) ---
+OpT = TypeVar('OpT', bound=UpdateOperation)
+
+def find_operation(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str
+) -> Optional[OpT]:
+    """Finds the first operation of a specific type and field path."""
+    for op in operations:
+        if isinstance(op, op_type) and op.field_path == field_path:
+            return op
+    return None
+
+def assert_operation_present(
+    operations: List[UpdateOperation],
+    op_type: Type[OpT],
+    field_path: str,
+    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
+):
+    """Asserts that a specific operation exists and optionally checks its attributes."""
+    op = find_operation(operations, op_type, field_path)
+    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
+    if expected_attrs:
+        for attr, expected_value in expected_attrs.items():
+            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
+            actual_value = getattr(op, attr)
+            # Use pytest.approx for floats if needed
+            if isinstance(expected_value, float):
+                 import pytest
+                 assert actual_value == pytest.approx(expected_value), \
+                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+            else:
+                 assert actual_value == expected_value, \
+                    f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
+# --- End Test Helper ---
 
 
 def test_decrement_with_type_validation():
@@ -12,35 +59,35 @@ def test_decrement_with_type_validation():
     update.decrement(update.fields.balance, 5.5)
     update.decrement(update.fields.score, 3)  # Union type
 
-    # Invalid field (non-existent)
-    with pytest.raises(TypeError):
+    # Invalid field (non-existent) - Validator raises InvalidPathError via increment
+    with pytest.raises(InvalidPathError): # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< CORRECTED EXPECTED EXCEPTION
         update.decrement("non_existent", 5)
 
-    # Invalid field (non-numeric)
-    with pytest.raises(TypeError):
-        update.decrement(update.fields.name, 5)  # name is string, not numeric
+    # Invalid field (non-numeric) - Validator raises ValueTypeError via increment
+    with pytest.raises(ValueTypeError): # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< CORRECTED EXPECTED EXCEPTION
+        update.decrement(update.fields.name, 5)
 
-    # Invalid amount type
+    # Invalid amount type - Method raises TypeError directly
     with pytest.raises(TypeError):
-        update.decrement(update.fields.score, "5")  # amount must be numeric, not string
+        update.decrement(update.fields.score, "5")
 
     with pytest.raises(TypeError):
-        update.decrement(update.fields.score, [5])  # amount must be numeric, not list
+        update.decrement(update.fields.score, [5])
 
 
 def test_multiple_decrement_rejected():
-    """Test that multiple decrement operations on same field are rejected."""
+    """Test that multiple decrement/increment operations on same field are rejected."""
     update = Update(User)
 
     # First decrement is allowed
     update.decrement(update.fields.points, 10)
 
     # Second decrement on same field should be rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement(update.fields.points, 5)
 
     # Default value decrement is also rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement(update.fields.points)
 
     # But decrement on a different field is fine
@@ -48,8 +95,11 @@ def test_multiple_decrement_rejected():
 
     # Verify only original decrement operations are in the update
     result = update.build()
-    assert result["$inc"]["points"] == -10
-    assert result["$inc"]["balance"] == -5.5
+    assert isinstance(result, list)
+    assert len(result) == 2 # Only the first points and the balance decrement
+
+    assert_operation_present(result, IncrementOperation, "points", {"amount": -10})
+    assert_operation_present(result, IncrementOperation, "balance", {"amount": -5.5})
 
 
 def test_decrement_after_increment_rejected():
@@ -60,12 +110,14 @@ def test_decrement_after_increment_rejected():
     update.increment(update.fields.points, 5)
 
     # Decrement on the same field should be rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement(update.fields.points, 10)
 
     # Verify the original increment remains
     result = update.build()
-    assert result["$inc"]["points"] == 5
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "points", {"amount": 5})
 
 
 def test_decrement_with_optional_and_union_types():
@@ -74,15 +126,18 @@ def test_decrement_with_optional_and_union_types():
 
     # Each field can only have one decrement
     update.decrement(update.fields.union_numeric, 5)
+    # Decrementing Optional[int] should work if validation allows numeric ops on it
     update.decrement(update.fields.optional_int, 10)
 
     # Second decrement on the same field is rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement(update.fields.union_numeric, 3.14)
 
     result = update.build()
-    assert result["$inc"]["union_numeric"] == -5  # Only the first decrement
-    assert result["$inc"]["optional_int"] == -10
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert_operation_present(result, IncrementOperation, "union_numeric", {"amount": -5})
+    assert_operation_present(result, IncrementOperation, "optional_int", {"amount": -10})
 
 
 def test_decrement_nested_fields():
@@ -93,16 +148,16 @@ def test_decrement_nested_fields():
     update.decrement(update.fields.nested.inner.val, 5)
 
     # Multiple decrements on same nested field are rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement(update.fields.nested.inner.val, 3)
 
-    # Invalid nested field (non-existent)
-    with pytest.raises(TypeError):
+    # Invalid nested field (non-existent) - Validator raises InvalidPathError via increment
+    with pytest.raises(InvalidPathError): # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< CORRECTED EXPECTED EXCEPTION
         update.decrement("nested.non_existent", 5)
 
-    # Invalid nested field (non-numeric)
-    with pytest.raises(TypeError):
-        update.decrement(update.fields.str_list, 5)  # str_list is a list, not numeric
+    # Invalid nested field (non-numeric) - Validator raises ValueTypeError via increment
+    with pytest.raises(ValueTypeError): # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< CORRECTED EXPECTED EXCEPTION
+        update.decrement(update.fields.str_list, 5) # str_list is not numeric
 
 
 def test_decrement_without_type_validation():
@@ -116,30 +171,32 @@ def test_decrement_without_type_validation():
     update.decrement("nested.counter", 3)
 
     # Multiple decrements on the same field are rejected
-    with pytest.raises(ValueError, match="already has an increment"):
+    with pytest.raises(ValueError, match="already has an increment/decrement operation"): # Updated match message
         update.decrement("counter", 2)
 
     # Build should succeed with original decrements
     result = update.build()
-    assert "$inc" in result
-    assert result["$inc"]["counter"] == -5
-    assert result["$inc"]["value"] == -10.5
-    assert result["$inc"]["score"] == -1
-    assert result["$inc"]["nested.counter"] == -3
+    assert isinstance(result, list)
+    assert len(result) == 4
+
+    assert_operation_present(result, IncrementOperation, "counter", {"amount": -5})
+    assert_operation_present(result, IncrementOperation, "value", {"amount": -10.5})
+    assert_operation_present(result, IncrementOperation, "score", {"amount": -1})
+    assert_operation_present(result, IncrementOperation, "nested.counter", {"amount": -3})
 
 
 def test_decrement_build_result():
-    """Test that decrement operations build the correct MongoDB update document."""
+    """Test that decrement operations build the correct agnostic operation list."""
     update = Update()
     # Use separate fields
     update.decrement("views", 1)
     update.decrement("score", 5.5)
 
     result = update.build()
-    assert "$inc" in result
-    assert len(result["$inc"]) == 2
-    assert result["$inc"]["views"] == -1
-    assert result["$inc"]["score"] == -5.5
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert_operation_present(result, IncrementOperation, "views", {"amount": -1})
+    assert_operation_present(result, IncrementOperation, "score", {"amount": -5.5})
 
 
 def test_decrement_zero():
@@ -147,8 +204,9 @@ def test_decrement_zero():
     update = Update().decrement("counter", 0)
 
     result = update.build()
-    assert "$inc" in result
-    assert result["$inc"]["counter"] == 0
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "counter", {"amount": 0})
 
 
 def test_decrement_negative():
@@ -156,13 +214,13 @@ def test_decrement_negative():
     update = Update().decrement("counter", -5)
 
     result = update.build()
-    assert "$inc" in result
-    assert result["$inc"]["counter"] == 5  # Negative decrement is a positive increment
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "counter", {"amount": 5}) # Negative decrement is positive increment
 
 
 def test_decrement_reuses_increment():
-    """Test that decrement reuses the increment method with negative value."""
-    # Create separate update objects for each case
+    """Test that decrement uses the increment method logic."""
     update1 = Update(NumericModel)
     update2 = Update(NumericModel)
 
@@ -173,4 +231,17 @@ def test_decrement_reuses_increment():
     result1 = update1.build()
     result2 = update2.build()
 
-    assert result1["$inc"]["int_field"] == result2["$inc"]["int_field"] == -10
+    assert isinstance(result1, list)
+    assert isinstance(result2, list)
+    assert len(result1) == 1
+    assert len(result2) == 1
+
+    op1 = result1[0]
+    op2 = result2[0]
+
+    assert isinstance(op1, IncrementOperation)
+    assert isinstance(op2, IncrementOperation)
+    assert op1.field_path == "int_field"
+    assert op2.field_path == "int_field"
+    assert op1.amount == -10
+    assert op2.amount == -10 # decrement(10) results in IncrementOperation(amount=-10)
