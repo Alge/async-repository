@@ -1023,11 +1023,15 @@ class PostgresRepository(Repository[T], Generic[T]):
         logger.debug(
             f"Deleting many {self.entity_type.__name__}(s) matching: {options!r}"
         )
+        # <<< Change the error message here >>>
         if not options.expression:
-            raise ValueError("QueryOptions needs 'expression' for delete_many.")
+            raise ValueError(
+                "QueryOptions must include an 'expression' for delete_many."
+            )
 
+        # Note: PostgreSQL DELETE doesn't directly support LIMIT/OFFSET/ORDER BY
         if options.limit is not None or options.offset is not None or options.sort_by:
-            logger.warning("limit/offset/sort_by ignored for delete_many.")
+            logger.warning("limit/offset/sort_by ignored for Postgres delete_many.")
 
         try:
             param_idx = 1
@@ -1036,27 +1040,37 @@ class PostgresRepository(Repository[T], Generic[T]):
                 find_parts, param_idx
             )
 
+            # <<< Adjusted safety check >>>
             if not where_clause or where_clause == "WHERE 1=1":
-                raise ValueError("delete_many requires a specific filter.")
+                raise ValueError(
+                    "Cannot delete_many without a specific filter expression "
+                    "(safety check)."
+                 )
 
             sql = f"DELETE FROM {self._qualified_table_name} {where_clause}"
             all_params = where_params
 
             logger.debug(f"Executing delete_many: SQL='{sql}', Params={all_params}")
             async with self._get_session() as conn:
-                status = await conn.execute(sql, *all_params, timeout=timeout)
-                match = re.match(r"DELETE (\d+)", status)
-                affected_count = int(match.group(1)) if match else 0
+                 status = await conn.execute(sql, *all_params, timeout=timeout)
+                 match = re.match(r"DELETE (\d+)", status or "") # Add or ""
+                 affected_count = int(match.group(1)) if match else 0
 
             logger.info(
                 f"Deleted {affected_count} {self.entity_type.__name__}(s). "
                 "(Commit handled externally)"
             )
             return affected_count
+        except ValueError as e:
+            # Handle the specific ValueError raised for missing expression
+            # or the safety check
+            logger.error(f"ValueError during delete_many: {e}")
+            self._handle_db_error(e, "deleting many entities (validation)")
+            raise # Re-raise ValueError after logging/handling
         except Exception as e:
             logger.error(f"Error deleting many entities: {e}", exc_info=True)
             self._handle_db_error(e, "deleting many entities")
-            raise  # pragma: no cover
+            raise # pragma: no cover
 
     async def list(
         self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
@@ -1299,50 +1313,73 @@ class PostgresRepository(Repository[T], Generic[T]):
         next_index = start_index + num_params
         return reindexed_clause, params, next_index
 
-  
+        # src/async_repository/backends/postgres_repository.py (within PostgresRepository class)
+
     def _translate_query_options(
-        self, options: QueryOptions, include_sorting_pagination: bool = False
+            self, options: QueryOptions, include_sorting_pagination: bool = False
     ) -> Dict[str, Any]:
         """Translate QueryOptions into PostgreSQL WHERE/ORDER BY parts."""
         sql_parts: Dict[str, Any] = {"where": "1=1", "params": []}
         current_param_index = 1  # Start fresh for each query translation
 
         if options.expression:
+            self._logger.debug(
+                f"Translating expression: {options.expression!r}")  # Log start
             try:
                 (
                     where_clause,
                     params,
-                    current_param_index,
+                    current_param_index,  # Capture updated index
                 ) = self._translate_expression_recursive(
                     options.expression, current_param_index
                 )
-                if where_clause and where_clause != "1=1":
+                # Check if the recursive call actually produced a clause
+                if where_clause and where_clause != "1=1" and where_clause != "TRUE":
                     sql_parts["where"] = where_clause
                     sql_parts["params"] = params
+                    self._logger.debug(
+                        f"Translated WHERE: '{where_clause}', PARAMS: {params}")
+                elif where_clause == "FALSE":  # Handle definite false conditions
+                    sql_parts["where"] = "1=0"  # More standard way than FALSE
+                    sql_parts["params"] = []
+                    self._logger.debug(
+                        "Translated WHERE: '1=0' (Expression evaluated to FALSE)")
+                else:
+                    self._logger.debug(
+                        "Expression translated to trivial/empty WHERE clause.")
+
             except Exception as e:
+                # Log the error source during translation attempt
                 self._logger.error(
                     f"Failed to translate query expression: {options.expression!r}",
                     exc_info=True,
                 )
+                # Re-raise to stop further processing and allow test to catch
                 raise
 
+        # --- Sorting and Pagination ---
         if include_sorting_pagination:
             if options.random_order:
                 sql_parts["order"] = "RANDOM()"
+                self._logger.debug("Added ORDER BY RANDOM()")
             elif options.sort_by:
                 direction = "DESC" if options.sort_desc else "ASC"
                 if "." in options.sort_by:
                     base_col, *nested_parts = options.sort_by.split(".")
+                    # Use text extraction for sorting nested JSONB fields
                     path_str = "{" + ",".join(nested_parts) + "}"
-                    # Use #>> for sorting by text representation
                     sql_parts["order"] = (
                         f'("{base_col}"#>>\'{path_str}\') {direction}'
                     )
                 else:
+                    # Direct column sort
                     sql_parts["order"] = f'"{options.sort_by}" {direction}'
+                self._logger.debug(f"Added ORDER BY: {sql_parts['order']}")
             else:
                 sql_parts["order"] = None
 
+            # Store limit/offset values regardless of whether they are used
+            # in the SQL generation (handled by the caller, e.g., list method)
             sql_parts["limit"] = (
                 options.limit
                 if (options.limit is not None and options.limit >= 0)
@@ -1353,20 +1390,44 @@ class PostgresRepository(Repository[T], Generic[T]):
                 if (options.offset is not None and options.offset > 0)
                 else 0
             )
+            if sql_parts["limit"] != -1: self._logger.debug(
+                f"Query Limit: {sql_parts['limit']}")
+            if sql_parts["offset"] != 0: self._logger.debug(
+                f"Query Offset: {sql_parts['offset']}")
 
+        self._logger.debug(f"Finished translating query options: {sql_parts}")
         return sql_parts
 
+        # src/async_repository/backends/postgres_repository.py
+
     def _translate_expression_recursive(
-        self, expression: QueryExpression, param_start_index: int
+            self, expression: QueryExpression, param_start_index: int
     ) -> Tuple[str, List[Any], int]:
-        """Recursively translate QueryExpression nodes into PostgreSQL WHERE."""
+        """
+        Recursively translate QueryExpression nodes into PostgreSQL WHERE clause.
+
+        Args:
+            expression: The QueryExpression node to translate.
+            param_start_index: The starting index for $n placeholders.
+
+        Returns:
+            A tuple containing:
+                - The generated SQL WHERE clause fragment (or "TRUE"/"FALSE").
+                - A list of parameters for this fragment.
+                - The next available parameter index ($n+1).
+        """
         current_params: List[Any] = []
         current_index = param_start_index
 
         if isinstance(expression, QueryFilter):
             field = expression.field_path
-            op = expression.operator
+            op = expression.operator  # op can be QueryOperator member or str
             val = expression.value
+
+            self._logger.debug(
+                f"Translating Filter: field='{field}', op='{op}' "
+                f"(type: {type(op)}), val='{val}' (type: {type(val)})"
+            )
 
             sql_op_map = {
                 QueryOperator.EQ: "=", QueryOperator.NE: "!=",
@@ -1375,105 +1436,207 @@ class PostgresRepository(Repository[T], Generic[T]):
                 QueryOperator.IN: "IN", QueryOperator.NIN: "NOT IN",
                 QueryOperator.LIKE: "LIKE", QueryOperator.STARTSWITH: "LIKE",
                 QueryOperator.ENDSWITH: "LIKE", QueryOperator.CONTAINS: "@>",
-                QueryOperator.EXISTS: "?", # Placeholder, handled below
+                # EXISTS ('?') is handled separately below
             }
-            sql_op = sql_op_map.get(op)
-            placeholder = f"${current_index}"
+            # Handle case where op is already a QueryOperator enum member
+            op_key = op if isinstance(op, QueryOperator) else str(op)
+            sql_op = sql_op_map.get(op_key)  # Use op_key for lookup
+            placeholder = f"${current_index}"  # Base placeholder for single value
 
+            self._logger.debug(f"Mapped sql_op for '{op_key}': {sql_op}")
+            is_exists_op = op == QueryOperator.EXISTS or str(op) == 'exists'
+            is_contains_op = op == QueryOperator.CONTAINS or str(op) == 'contains'
+            self._logger.debug(
+                f"Checking condition: not sql_op ({not sql_op}) "
+                f"and not is_exists_op ({not is_exists_op}) "
+                f"and not is_contains_op ({not is_contains_op})"
+            )
+
+            # --- Raise error for unsupported operators ---
+            if not sql_op and not is_exists_op and not is_contains_op:
+                self._logger.error(
+                    f"Unsupported operator '{op}' detected, raising ValueError."
+                )
+                raise ValueError(
+                    f"Unsupported query operator for PostgreSQL translation: {op}"
+                )
+
+            # --- Path and Field Quoting ---
             is_jsonb_path = "." in field
             quoted_field: str
             path_list: Optional[List[str]] = None
-            quoted_base_column: Optional[str] = None
+            quoted_base_column: Optional[str] = None  # Only set if is_jsonb_path
 
             if is_jsonb_path:
                 base_column_name, *nested_parts = field.split(".")
                 quoted_base_column = f'"{base_column_name}"'
                 path_list = nested_parts
-                path_str = "{" + ",".join(path_list) + "}"
-                # Use #>> for text extraction/comparison by default
-                quoted_field = f"({quoted_base_column}#>>'{path_str}')"
+                # Use #>> for default text comparison for most operators
+                path_str_hashtags = "{" + ",".join(path_list) + "}"
+                quoted_field = f"({quoted_base_column}#>>'{path_str_hashtags}')"
             else:
-                quoted_base_column = f'"{field}"'
+                quoted_base_column = f'"{field}"'  # Base column is the field itself
                 quoted_field = quoted_base_column
 
             # --- Operator specific logic ---
-            if op == QueryOperator.EXISTS:
+            if is_exists_op:
                 if not is_jsonb_path:  # Top-level field existence
-                    exists_op = "IS NOT NULL" if val else "IS NULL"
-                    return f"{quoted_field} {exists_op}", [], current_index
+                    exists_op_sql = "IS NOT NULL" if val else "IS NULL"
+                    return f"{quoted_field} {exists_op_sql}", [], current_index
                 else:
-                    # Use jsonb_path_exists for nested paths
-                    # Build path suitable for jsonpath: 'key."0".sub'
+                    # Nested JSONB path existence using jsonb_path_exists
                     jsonpath_suffix = ".".join(
-                        f'"{p}"' if not p.isdigit() else f"[{p}]"
+                        f'"{p}"' if not p.isdigit() else f'[{p}]'
                         for p in (path_list or [])
                     )
-                    # jsonpath param needs full path string
                     path_param = f"$.{jsonpath_suffix}"
                     current_params.append(path_param)
                     idx = current_index
                     current_index += 1
+                    # Note: quoted_base_column is guaranteed non-None here
                     sql = f"jsonb_path_exists({quoted_base_column}, ${idx})"
                     if not val:
                         sql = f"NOT {sql}"
                     return sql, current_params, current_index
 
-            elif op == QueryOperator.CONTAINS:
-                param_val = json.dumps(prepare_for_storage(val))
-                current_params.append(param_val)
-                idx = current_index
-                current_index += 1
-                if path_list:
-                    path_str = "{" + ",".join(path_list) + "}"
-                    # Use #> to extract the object/array at path before @>
-                    sql = f"({quoted_base_column}#>'{path_str}') @> ${idx}::jsonb"
+            # In _translate_expression_recursive method in PostgresRepository class
+            # Replace the "is_contains_op" section with this improved version:
+
+            elif is_contains_op:
+                # Check if the target field is likely an array based on hints
+                is_target_array = False
+                if self._validator:
+                    try:
+                        field_type = self._validator.get_field_type(field)
+                        # Check if origin is List/list or field_type itself is list
+                        origin = get_origin(field_type)
+                        # Allow List, list, tuple, Tuple, set, Set as array-like for contains
+                        if origin in (list, List, tuple, Tuple, set, Set) or \
+                                isinstance(field_type, (list, tuple, set)):
+                            is_target_array = True
+                    except InvalidPathError:
+                        pass  # Field not found in validator
+
+                # Use JSONB specialized operators
+                if is_jsonb_path or is_target_array:
+                    # For PostgreSQL JSONB arrays, we need a different approach:
+                    # For strings in arrays, use the ? operator which checks string values
+                    if isinstance(val, str) and is_target_array:
+                        # For string value in JSONB array, use the ? operator
+                        # This directly checks if the string is an array element
+                        current_params.append(val)  # Just the string value
+                        idx = current_index
+                        current_index += 1
+
+                        if path_list and quoted_base_column:
+                            # Nested JSONB path contains check
+                            path_str_curly = "{" + ",".join(path_list) + "}"
+                            sql = f"({quoted_base_column}#>'{path_str_curly}') ? ${idx}"
+                        else:
+                            # Top-level JSONB column contains check for string value in array
+                            sql = f"{quoted_field} ? ${idx}"
+
+                        self._logger.debug(
+                            f"Array contains string query: {sql} with string param: '{val}'"
+                        )
+                    else:
+                        # Fallback to standard @> for non-string values or non-array fields
+                        # This is useful for checking object containment or more complex values
+                        prepared_val = prepare_for_storage(val)
+                        # JSON array with the value
+                        param_json_string = json.dumps([prepared_val])
+
+                        current_params.append(param_json_string)
+                        idx = current_index
+                        current_index += 1
+
+                        if path_list and quoted_base_column:
+                            # Nested JSONB path contains check
+                            path_str_curly = "{" + ",".join(path_list) + "}"
+                            sql = f"({quoted_base_column}#>'{path_str_curly}') @> ${idx}::jsonb"
+                        else:
+                            # Top-level JSONB column contains check
+                            sql = f"{quoted_field} @> ${idx}::jsonb"
+
+                        self._logger.debug(
+                            f"Array/Object containment query: {sql} with JSONB param: '{param_json_string}'"
+                        )
+
+                    return sql, current_params, current_index
                 else:
-                    sql = f"{quoted_field} @> ${idx}::jsonb"
-                return sql, current_params, current_index
+                    # --- Fallback to LIKE for non-JSONB/non-array TEXT fields ---
+                    self._logger.warning(
+                        f"Operator 'contains' used on non-JSONB/non-array "
+                        f"field '{field}'. Falling back to LIKE '%value%'."
+                    )
+                    if not isinstance(val, str):
+                        raise ValueError(
+                            f"Cannot use non-string value '{val}' with "
+                            f"'contains' on TEXT field '{field}'"
+                        )
+                    # Use the mapped operator which should be LIKE here
+                    sql_op_like = sql_op_map.get(QueryOperator.LIKE)
+                    if not sql_op_like:  # Defensive check
+                        raise RuntimeError(
+                            "Internal error: LIKE operator mapping missing.")
+                    current_params.append(f"%{val}%")
+                    sql = f"{quoted_field} {sql_op_like} {placeholder}"
+                    current_index += 1
+                    return sql, current_params, current_index
 
-            elif op in (QueryOperator.IN, QueryOperator.NIN):
-                if not isinstance(val, (list, tuple)):
-                    raise ValueError(f"Value for {op} must be a list/tuple.")
-                if not val:
-                    return ("FALSE", []) if op == QueryOperator.IN else ("TRUE", [])
-                placeholders = ", ".join(
-                    f"${current_index + i}" for i in range(len(val))
-                )
-                current_params.extend(val)
-                sql = f"{quoted_field} {sql_op} ({placeholders})"
-                current_index += len(val)
-                return sql, current_params, current_index
+            # --- Handle remaining standard operators using sql_op ---
+            elif sql_op:  # Should only be reached if sql_op was found
+                if op_key in (QueryOperator.IN, QueryOperator.NIN):
+                    if not isinstance(val, (list, tuple)):
+                        raise ValueError(f"Value for {op} must be list/tuple.")
+                    if not val:
+                        sql_frag = "FALSE" if op_key == QueryOperator.IN else "TRUE"
+                        return sql_frag, [], param_start_index
+                    placeholders = ", ".join(
+                        f"${current_index + i}" for i in range(len(val))
+                    )
+                    current_params.extend(val)
+                    sql = f"{quoted_field} {sql_op} ({placeholders})"
+                    current_index += len(val)
+                    return sql, current_params, current_index
 
-            elif op == QueryOperator.STARTSWITH:
-                if not isinstance(val, str):
-                    raise ValueError("Value must be string.")
-                current_params.append(f"{val}%")
-                sql = f"{quoted_field} {sql_op} {placeholder}"
-                current_index += 1
-                return sql, current_params, current_index
+                elif op_key == QueryOperator.STARTSWITH:
+                    if not isinstance(val, str): raise ValueError(
+                        "Value must be string.")  # noqa E701
+                    current_params.append(f"{val}%")
+                    sql = f"{quoted_field} {sql_op} {placeholder}"
+                    current_index += 1
+                    return sql, current_params, current_index
 
-            elif op == QueryOperator.ENDSWITH:
-                if not isinstance(val, str):
-                    raise ValueError("Value must be string.")
-                current_params.append(f"%{val}")
-                sql = f"{quoted_field} {sql_op} {placeholder}"
-                current_index += 1
-                return sql, current_params, current_index
+                elif op_key == QueryOperator.ENDSWITH:
+                    if not isinstance(val, str): raise ValueError(
+                        "Value must be string.")  # noqa E701
+                    current_params.append(f"%{val}")
+                    sql = f"{quoted_field} {sql_op} {placeholder}"
+                    current_index += 1
+                    return sql, current_params, current_index
 
-            elif op == QueryOperator.LIKE:
-                if not isinstance(val, str):
-                    raise ValueError("Value must be string.")
-                current_params.append(val)
-                sql = f"{quoted_field} {sql_op} {placeholder}"
-                current_index += 1
-                return sql, current_params, current_index
+                elif op_key == QueryOperator.LIKE:
+                    if not isinstance(val, str): raise ValueError(
+                        "Value must be string.")  # noqa E701
+                    current_params.append(val)
+                    sql = f"{quoted_field} {sql_op} {placeholder}"
+                    current_index += 1
+                    return sql, current_params, current_index
 
-            else:  # EQ, NE, GT, GTE, LT, LTE
-                # Assume text comparison via #>>/->> for JSONB paths
-                current_params.append(val)
-                sql = f"{quoted_field} {sql_op} {placeholder}"
-                current_index += 1
-                return sql, current_params, current_index
+                else:  # EQ, NE, GT, GTE, LT, LTE
+                    current_params.append(val)
+                    sql = f"{quoted_field} {sql_op} {placeholder}"
+                    current_index += 1
+                    return sql, current_params, current_index
+            else:
+                # Defensive: Should be unreachable due to initial check
+                self._logger.error(
+                    f"Internal Translation Error: Operator '{op}' fell through."
+                )  # pragma: no cover
+                raise RuntimeError(
+                    f"Internal error: Operator '{op}' failed."
+                )  # pragma: no cover
 
         elif isinstance(expression, QueryLogical):
             if not expression.conditions:
@@ -1484,12 +1647,10 @@ class PostgresRepository(Repository[T], Generic[T]):
             current_idx_recursive = param_start_index
 
             for cond in expression.conditions:
-                (
-                    fragment,
-                    params,
-                    current_idx_recursive,
-                ) = self._translate_expression_recursive(
-                    cond, current_idx_recursive
+                fragment, params, current_idx_recursive = (
+                    self._translate_expression_recursive(
+                        cond, current_idx_recursive
+                    )
                 )
                 if fragment and fragment not in ("TRUE", "FALSE"):
                     sql_fragments.append(f"({fragment})")
@@ -1503,7 +1664,12 @@ class PostgresRepository(Repository[T], Generic[T]):
                 return ("TRUE", [], current_idx_recursive)
 
             logical_op_sql = f" {expression.operator.upper()} "
-            return logical_op_sql.join(sql_fragments), all_params, current_idx_recursive
+            return (
+                logical_op_sql.join(sql_fragments),
+                all_params,
+                current_idx_recursive
+            )
+
         else:
             raise TypeError(f"Unknown QueryExpression type: {type(expression)}")
 
@@ -1582,54 +1748,48 @@ class PostgresRepository(Repository[T], Generic[T]):
                     f"COALESCE({quoted_base_column}, ${idx}), ${idx})"
                 )
 
-            elif isinstance(op, PushOperation):
-                if not op.items:
-                    continue
 
-                # Build the concatenation part first (::jsonb for each item)
+            elif isinstance(op, PushOperation):
+                if not op.items: continue
+
                 concat_parts = []
                 for item in op.items:
-                    params.append(item)  # Add item to params
-                    item_idx = current_param_index
-                    current_param_index += 1
-                    concat_parts.append(f"${item_idx}::jsonb")  # Cast each item
+                    params.append(item)
+                    item_idx = current_param_index; current_param_index += 1
+                    concat_parts.append(f"${item_idx}::jsonb")
                 concat_clause = " || ".join(concat_parts)
 
                 if is_nested:
-                    # --- Nested Push ---
                     path_parts = field.split('.')[1:]
-                    # Path for jsonb_set (e.g., ARRAY['key', '0'])
-                    path_array_sql = "ARRAY[" + ",".join(
-                        f"'{p}'" for p in path_parts
-                    ) + "]"
-                    # Path for jsonb_path_query (e.g., '$.key[0]')
-                    # Build the path string carefully for jsonpath literal
-                    jsonpath_suffix = '.'.join(
-                        f'"{p}"' if not p.isdigit() else f'[{p}]'
-                        for p in path_parts
-                    )
-                    # jsonpath expression needs to be a valid SQL string literal
-                    # including the cast ::jsonpath
-                    jsonpath_sql_literal = f"('$.{jsonpath_suffix}')::jsonpath"
+                    path_array_sql = "ARRAY[" + ",".join(f"'{p}'" for p in path_parts) + "]"
+                    # Path for #> operator (e.g., '{emails}')
+                    path_curly_braces = "{" + ",".join(path_parts) + "}"
 
-                    # Get the existing array at the path, default to '[]'
+                    # Extract existing array using #>, default to '[]' if path null/invalid
                     existing_array_expr = (
-                        f"COALESCE(jsonb_path_query_array("
-                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
-                        f"{jsonpath_sql_literal}"  # Use the literal here
-                        f"), '[]'::jsonb)"
+                        f"COALESCE({quoted_base_column} #> '{path_curly_braces}', '[]'::jsonb)"
                     )
 
-                    # Use jsonb_set to place the concatenated array back
+                    # Ensure the extracted value IS an array before concatenating
+                    # This adds complexity back, but might be necessary
+                    safe_concat_expr = (
+                        f"CASE "
+                        f"WHEN jsonb_typeof({existing_array_expr}) = 'array' "
+                        f"THEN {existing_array_expr} || {concat_clause} "
+                        f"ELSE '[]'::jsonb || {concat_clause} " # Start new array if not array
+                        f"END"
+                    )
+
                     set_clauses.append(
                         f'{quoted_base_column} = jsonb_set('
                         f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
-                        f"{path_array_sql}, "  # Path for jsonb_set
-                        f"({existing_array_expr} || {concat_clause}), "  # Value
-                        f"true)"  # create_missing = true
+                        f"{path_array_sql}, "
+                        # f"({existing_array_expr} || {concat_clause}), " # Old version
+                        f"{safe_concat_expr}, " # New version with type check
+                        f"true)"
                     )
                 else:
-                    # --- Top-Level Push ---
+                    # Top-Level Push (remains same)
                     set_clauses.append(
                         f"{quoted_base_column} = "
                         f"COALESCE({quoted_base_column}, '[]'::jsonb) || "

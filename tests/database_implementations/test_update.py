@@ -426,7 +426,7 @@ async def test_update_max_operation(initialized_repository, logger):
     assert updated.value == 150 # Should remain 150
 
 
-async def test_update_multiply_operation(initialized_repository, logger):
+async def test_update_multiply_operation_int(initialized_repository, logger):
     """Test multiply operation."""
     repo = initialized_repository
     e = Entity(name="MulTest", value=10)
@@ -434,11 +434,29 @@ async def test_update_multiply_operation(initialized_repository, logger):
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).mul("value", 2.5) # Multiply by 2.5
+    update = Update(Entity).mul("value", 4) # Multiply by 2.5
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 25.0 # 10 * 2.5
+    assert updated.value == 40 # 10 * 4
+
+
+async def test_update_multiply_operation_float(initialized_repository, logger):
+    """Test multiply operation on a float field."""  # Updated docstring slightly
+    repo = initialized_repository
+    # Initialize with float_value, value will have its default (e.g., 100)
+    e = Entity(name="MulTest", float_value=10.0, value=999)  # Set value distinct
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).mul("float_value", 2.5)  # Multiply float_value by 2.5
+
+    await repo.update_one(options, update, logger)
+    updated = await repo.get(e.id, logger)
+    logger.info("Updated entity: %s", updated)
+
+    assert updated.float_value == 25.0  # 10.0 * 2.5
 
 
 # =============================================================================

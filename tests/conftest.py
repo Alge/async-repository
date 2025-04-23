@@ -88,20 +88,41 @@ if is_postgres_available():
 # Event Loop (Function Scoped - Default for pytest-asyncio tests)
 
 
-
 @pytest_asyncio.fixture
 async def mock_postgres_pool(postgresql_proc):
     """
-    Creates a PostgreSQL connection pool using asyncpg.create_pool with the provided postgresql_proc fixture.
+    Creates a PostgreSQL connection pool with a unique temporary database for each test.
     """
-    # Connection details
-    conn_str = f"postgresql://postgres:postgres@{postgresql_proc.host}:{postgresql_proc.port}/postgres"
+    # Generate a unique database name for this test
+    temp_db_name = f"test_db_{uuid.uuid4().hex}"
 
-    # Create connection pool
-    pool = await asyncpg.create_pool(conn_str)
+    # Connection details for admin connection to create/drop database
+    admin_conn_str = f"postgresql://postgres:postgres@{postgresql_proc.host}:{postgresql_proc.port}/postgres"
 
-    yield pool
-    await pool.close()
+    # Create admin connection to postgres db
+    admin_conn = await asyncpg.connect(admin_conn_str)
+
+    try:
+        # Create a temporary database for this test
+        await admin_conn.execute(f'CREATE DATABASE "{temp_db_name}"')
+
+        # Connection string for the test database
+        test_conn_str = f"postgresql://postgres:postgres@{postgresql_proc.host}:{postgresql_proc.port}/{temp_db_name}"
+
+        # Create connection pool to the test database
+        pool = await asyncpg.create_pool(test_conn_str)
+
+        yield pool
+
+        # Close all connections in the pool
+        await pool.close()
+
+        # Drop the temporary database after test
+        await admin_conn.execute(f'DROP DATABASE "{temp_db_name}"')
+
+    finally:
+        # Close admin connection
+        await admin_conn.close()
 
 
 # MongoDB Client Fixture (Function Scoped)
@@ -209,25 +230,17 @@ def sqlite_repository_factory(sqlite_memory_db_conn):
     return _create
 
 
-
-@pytest_asyncio.fixture
-async def postgresql_repository_factory(mock_postgres_pool, logger):
+@pytest.fixture
+def postgresql_repository_factory(mock_postgres_pool):
     """Factory for creating PostgreSQL repositories."""
 
-    # Create a clean slate and set up tables
-
     def create_repo(entity_type, app_id_field="id", db_id_field="_id"):
-
         table_names = {
             "Entity": "entities",
         }
 
         table_name = (
-                table_names.get(entity_type.__name__) or f"{entity_type.__name__.lower()}s"
-        )
-
-        print(
-            f"Creating a postgres repo for class: {entity_type} (entity class: {Entity}). Table name: {table_name}"
+            table_names.get(entity_type.__name__) or f"{entity_type.__name__.lower()}s"
         )
 
         return PostgresRepository(
@@ -238,8 +251,8 @@ async def postgresql_repository_factory(mock_postgres_pool, logger):
             app_id_field=app_id_field,
         )
 
-
     return create_repo
+
 # --- Parametrized Factory and Initialized Repo ---
 
 
@@ -323,6 +336,7 @@ class Entity:
         default_factory=lambda: f"Test Entity {uuid.uuid4().hex[:8]}"
     )
     value: int = 100
+    float_value: float = 100.0
     tags: List[str] = field(default_factory=lambda: ["test", "sample"])
     active: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
