@@ -1,10 +1,8 @@
 # tests/base/update/test_without_model.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,
     SetOperation,
     IncrementOperation,
     PushOperation,

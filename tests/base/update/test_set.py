@@ -1,10 +1,8 @@
 # tests/base/update/test_set.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,  # Import base operation class
     SetOperation,  # Import specific operation class
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
@@ -22,6 +20,7 @@ from tests.base.conftest import (
 from async_repository.base.utils import prepare_for_storage
 
 from tests.base.conftest import assert_operation_present, find_operations
+
 
 def test_set_with_valid_types():
     """Test that valid types in set operations pass validation."""

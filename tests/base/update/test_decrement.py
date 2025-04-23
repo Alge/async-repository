@@ -1,10 +1,8 @@
 # tests/base/update/test_decrement.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,  # Import base operation class
     IncrementOperation,  # Import specific operation class
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
@@ -12,7 +10,6 @@ from async_repository.base.update import (
 from tests.base.conftest import User, NumericModel, NestedTypes
 
 from tests.base.conftest import assert_operation_present
-
 
 
 def test_decrement_with_type_validation():

@@ -1,5 +1,4 @@
 import pytest
-from async_repository.base.exceptions import ObjectNotFoundException
 from async_repository.base.query import QueryOptions
 from tests.conftest import Entity
 from tests.conftest import REPOSITORY_IMPLEMENTATIONS

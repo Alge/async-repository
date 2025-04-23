@@ -1,10 +1,8 @@
 # tests/base/update/test_pull.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,  # Import base operation class
     PullOperation,  # Import specific operation class
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
@@ -20,6 +18,7 @@ from tests.base.conftest import (
 from async_repository.base.utils import prepare_for_storage
 
 from tests.base.conftest import assert_operation_present
+
 
 def test_pull_with_type_validation():
     """Test that pull operations are type validated for literals."""

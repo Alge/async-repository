@@ -1,10 +1,8 @@
 # tests/base/update/test_unset.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,  # Import base operation class
     UnsetOperation,  # Import specific operation class
     InvalidPathError,  # Import specific exception
     # ValueTypeError is not typically raised by unset
@@ -12,6 +10,7 @@ from async_repository.base.update import (
 from tests.base.conftest import User, NestedTypes
 
 from tests.base.conftest import assert_operation_present
+
 
 def test_unset_with_type_validation():
     """Test that unset operations are validated for field existence."""

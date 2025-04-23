@@ -8,19 +8,15 @@ from typing import (
     Union,
     Set,
     Tuple,
-    Type,
     NewType,
     TypeVar,
     Generic,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pydantic import BaseModel, Field as PydanticField
 
 from async_repository.base.model_validator import (
     ModelValidator,
-    ValidationError,
-    InvalidPathError,
-    ValueTypeError,
 )
 
 # --- Test Models ---

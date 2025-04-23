@@ -270,7 +270,7 @@ def test_validate_value_for_path_invalid_value(nested_validator, pydantic_valida
 
 def test_generic_type_enforcement():
     """Test the generic type enforcement capabilities."""
-    from .conftest import SimpleClass, PydanticModel, GenericModel, MyInt
+    from .conftest import SimpleClass, PydanticModel
 
     # Create validators with specific model types
     simple_validator = ModelValidator[SimpleClass](SimpleClass)

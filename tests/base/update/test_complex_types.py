@@ -1,12 +1,11 @@
 # tests/base/update/test_complex_types.py
 
 import pytest
-from typing import List, Optional, Type, TypeVar, Union  # Added imports
+from typing import List, Optional  # Added imports
 
 # Import Update builder and relevant components
 from async_repository.base.update import (
     Update,
-    UpdateOperation,
     PushOperation,
     PopOperation,
     PullOperation,
@@ -14,7 +13,7 @@ from async_repository.base.update import (
     ValueTypeError,
 )
 
-from tests.base.conftest import find_operations, assert_operation_present
+from tests.base.conftest import find_operations
 
 
 # --- Test Model ---

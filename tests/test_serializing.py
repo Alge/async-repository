@@ -1,11 +1,9 @@
 import pytest
 from pydantic import AnyHttpUrl, AnyWebsocketUrl
-from dataclasses import asdict
-from typing import Dict, Any
+from typing import Any
 
 from async_repository.base.query import QueryOptions
 from async_repository.base.update import Update
-from async_repository.base.exceptions import ObjectNotFoundException
 from tests.conftest import REPOSITORY_IMPLEMENTATIONS
 from tests.conftest import Entity  # Use the existing Entity class
 

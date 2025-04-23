@@ -6,18 +6,13 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional, Any, Dict, List
-from unittest.mock import MagicMock
 
 from mongomock_motor import AsyncMongoMockClient
-from pydantic import AnyUrl
 
 import pytest
 import pytest_asyncio
 
 import os
-import shutil
-import subprocess
-import logging
 import platform
 import glob
 
@@ -48,6 +43,7 @@ def is_postgres_available():
     """
     Check if PostgreSQL binaries are available on the system.
     Works on both Linux (Ubuntu) and macOS.
+
 
     Returns:
         bool: True if PostgreSQL is detected, False otherwise
@@ -320,7 +316,6 @@ async def mock_mongodb_conn():
 def memory_repository_factory():
     """Factory for creating in-memory repositories."""
 
-    from async_repository import base
 
     def create_repo(entity_cls, app_id_field="id", db_id_field="_id"):
         from async_repository.memory.base import MemoryRepository

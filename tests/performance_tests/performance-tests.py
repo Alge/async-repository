@@ -1,17 +1,15 @@
 import asyncio
 import time
 import statistics
-import uuid
 import os
 from datetime import datetime
-from typing import Dict, Any, List, Type, Callable, Tuple, Optional
+from typing import Dict, Any, List, Type
 import matplotlib.pyplot as plt
 import pytest
 import pandas as pd
 
 from repositories.base.exceptions import (
     ObjectNotFoundException,
-    KeyAlreadyExistsException,
 )
 from repositories.base.query import QueryOptions
 from repositories.base.update import Update
@@ -533,7 +531,7 @@ async def test_delete_performance(repository_factory, logger):
 
     # Print delete_one results
     one_summary = delete_one_metrics.summary()
-    print(f"\nDelete One Performance Results:")
+    print("\nDelete One Performance Results:")
     for key, value in one_summary.items():
         print(f"  {key}: {value}")
 
@@ -991,11 +989,11 @@ async def test_upsert_performance(repository_factory, logger):
         insert_summary = insert_metrics.summary()
         update_summary = update_metrics.summary()
 
-        print(f"\nUpsert (Insert) Performance Results:")
+        print("\nUpsert (Insert) Performance Results:")
         for key, value in insert_summary.items():
             print(f"  {key}: {value}")
 
-        print(f"\nUpsert (Update) Performance Results:")
+        print("\nUpsert (Update) Performance Results:")
         for key, value in update_summary.items():
             print(f"  {key}: {value}")
 
@@ -1442,7 +1440,7 @@ async def test_generate_performance_report(repository_factory, logger):
     Runs benchmarks for all major operations and generates visualizations.
     """
     # Only run if explicitly requested to save test time
-    if not os.environ.get("RUN_PERF_REPORT", "false").lower() in ("true", "1", "yes"):
+    if os.environ.get("RUN_PERF_REPORT", "false").lower() not in ("true", "1", "yes"):
         pytest.skip(
             "Skipping full performance report. Set RUN_PERF_REPORT=true to generate."
         )

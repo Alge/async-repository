@@ -1,6 +1,4 @@
 import pytest
-from async_repository.base.exceptions import KeyAlreadyExistsException
-from async_repository.base.query import QueryOptions
 from async_repository.postgresql.base import PostgreSQLRepository
 from tests.conftest import Entity
 
