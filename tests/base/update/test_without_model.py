@@ -1,7 +1,7 @@
 # tests/base/update/test_without_model.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar # Added for helper
+from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
     UpdateOperation,
@@ -17,52 +17,7 @@ from async_repository.base.update import (
     # No need for validator exceptions here as we test without model
 )
 
-
-# --- Test Helper (Copied from previous response for completeness) ---
-OpT = TypeVar('OpT', bound=UpdateOperation)
-
-def find_operation(
-    operations: List[UpdateOperation],
-    op_type: Type[OpT],
-    field_path: str
-) -> Optional[OpT]:
-    """Finds the first operation of a specific type and field path."""
-    for op in operations:
-        if isinstance(op, op_type) and op.field_path == field_path:
-            return op
-    return None
-
-def assert_operation_present(
-    operations: List[UpdateOperation],
-    op_type: Type[OpT],
-    field_path: str,
-    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
-):
-    """Asserts that a specific operation exists and optionally checks its attributes."""
-    op = find_operation(operations, op_type, field_path)
-    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
-    if expected_attrs:
-        for attr, expected_value in expected_attrs.items():
-            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
-            actual_value = getattr(op, attr)
-            # Use pytest.approx for floats if needed
-            if isinstance(expected_value, float):
-                 import pytest
-                 assert actual_value == pytest.approx(expected_value), \
-                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-            else:
-                 # Special handling for comparing potentially serialized dicts/lists
-                 if isinstance(expected_value, (dict, list)) and isinstance(actual_value, (dict, list)):
-                     assert actual_value == expected_value, \
-                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-                 # Handle list comparison specifically for PushOperation 'items' attribute
-                 elif attr == 'items' and isinstance(expected_value, list) and isinstance(actual_value, list):
-                     assert actual_value == expected_value, \
-                        f"Attribute 'items' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-                 else:
-                     assert actual_value == expected_value, \
-                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-# --- End Test Helper ---
+from tests.base.conftest import assert_operation_present
 
 
 def test_update_without_model():
@@ -109,8 +64,12 @@ def test_fields_proxy_without_model():
     assert_operation_present(result, IncrementOperation, "counter", {"amount": 5})
     assert_operation_present(result, PushOperation, "tags", {"items": ["new_tag"]})
     assert_operation_present(result, SetOperation, "user.profile.age", {"value": 30})
-    assert_operation_present(result, SetOperation, "preferences.theme", {"value": "dark"})
-    assert_operation_present(result, PushOperation, "posts.comments.replies", {"items": ["New reply"]})
+    assert_operation_present(
+        result, SetOperation, "preferences.theme", {"value": "dark"}
+    )
+    assert_operation_present(
+        result, PushOperation, "posts.comments.replies", {"items": ["New reply"]}
+    )
 
 
 def test_complex_operations_without_model():
@@ -119,7 +78,7 @@ def test_complex_operations_without_model():
 
     # Min/max/mul operations
     update.min(update.fields.score, 0)
-    update.max(update.fields.score, 100) # Note: Multiple ops on score allowed
+    update.max(update.fields.score, 100)  # Note: Multiple ops on score allowed
     update.mul(update.fields.multiplier, 1.5)
 
     # Array operations
@@ -133,15 +92,19 @@ def test_complex_operations_without_model():
 
     result = update.build()
     assert isinstance(result, list)
-    assert len(result) == 8 # All operations are added
+    assert len(result) == 8  # All operations are added
 
     # Check operations using assert_operation_present
     assert_operation_present(result, MinOperation, "score", {"value": 0})
     assert_operation_present(result, MaxOperation, "score", {"value": 100})
     assert_operation_present(result, MultiplyOperation, "multiplier", {"factor": 1.5})
-    assert_operation_present(result, PushOperation, "items", {"items": [{"id": 1, "name": "Item 1"}]})
+    assert_operation_present(
+        result, PushOperation, "items", {"items": [{"id": 1, "name": "Item 1"}]}
+    )
     assert_operation_present(result, PopOperation, "recent_items", {"position": -1})
-    assert_operation_present(result, PullOperation, "tags", {"value_or_condition": "old_tag"})
+    assert_operation_present(
+        result, PullOperation, "tags", {"value_or_condition": "old_tag"}
+    )
     assert_operation_present(result, UnsetOperation, "user.temporary_data")
     assert_operation_present(result, IncrementOperation, "stats.visits", {"amount": 1})
 
@@ -154,11 +117,15 @@ def test_increment_restrictions_without_model():
     update.increment(update.fields.counter, 5)
 
     # Second increment on same field should be rejected
-    with pytest.raises(ValueError, match="already has an increment/decrement operation"):
+    with pytest.raises(
+        ValueError, match="already has an increment/decrement operation"
+    ):
         update.increment(update.fields.counter, 3)
 
     # Decrement after increment should also be rejected
-    with pytest.raises(ValueError, match="already has an increment/decrement operation"):
+    with pytest.raises(
+        ValueError, match="already has an increment/decrement operation"
+    ):
         update.decrement(update.fields.counter, 2)
 
     # But increment on different field is okay
@@ -166,8 +133,10 @@ def test_increment_restrictions_without_model():
 
     result = update.build()
     assert isinstance(result, list)
-    assert len(result) == 2 # Only the two successful increments
+    assert len(result) == 2  # Only the two successful increments
 
     # Check the operations that were successfully added
     assert_operation_present(result, IncrementOperation, "counter", {"amount": 5})
-    assert_operation_present(result, IncrementOperation, "another_counter", {"amount": 10})
+    assert_operation_present(
+        result, IncrementOperation, "another_counter", {"amount": 10}
+    )

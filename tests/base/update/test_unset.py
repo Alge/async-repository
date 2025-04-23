@@ -1,63 +1,17 @@
 # tests/base/update/test_unset.py
 
 import pytest
-from typing import List, Type, Optional, TypeVar # Added for helper
+from typing import List, Type, Optional, TypeVar  # Added for helper
 from async_repository.base.update import (
     Update,
-    UpdateOperation,        # Import base operation class
-    UnsetOperation,         # Import specific operation class
-    InvalidPathError,       # Import specific exception
+    UpdateOperation,  # Import base operation class
+    UnsetOperation,  # Import specific operation class
+    InvalidPathError,  # Import specific exception
     # ValueTypeError is not typically raised by unset
 )
-from .conftest import User, NestedTypes
+from tests.base.conftest import User, NestedTypes
 
-
-# --- Test Helper (Copied from previous response for completeness) ---
-OpT = TypeVar('OpT', bound=UpdateOperation)
-
-def find_operation(
-    operations: List[UpdateOperation],
-    op_type: Type[OpT],
-    field_path: str
-) -> Optional[OpT]:
-    """Finds the first operation of a specific type and field path."""
-    for op in operations:
-        if isinstance(op, op_type) and op.field_path == field_path:
-            return op
-    return None
-
-def assert_operation_present(
-    operations: List[UpdateOperation],
-    op_type: Type[OpT],
-    field_path: str,
-    expected_attrs: Optional[dict] = None # Check specific attributes like value, amount
-):
-    """Asserts that a specific operation exists and optionally checks its attributes."""
-    op = find_operation(operations, op_type, field_path)
-    assert op is not None, f"{op_type.__name__} for field '{field_path}' not found in {operations}"
-    if expected_attrs:
-        for attr, expected_value in expected_attrs.items():
-            assert hasattr(op, attr), f"Operation {op!r} missing attribute '{attr}'"
-            actual_value = getattr(op, attr)
-            # Use pytest.approx for floats if needed
-            if isinstance(expected_value, float):
-                 import pytest
-                 assert actual_value == pytest.approx(expected_value), \
-                     f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-            else:
-                 # Special handling for comparing potentially serialized dicts/lists
-                 if isinstance(expected_value, (dict, list)) and isinstance(actual_value, (dict, list)):
-                     assert actual_value == expected_value, \
-                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-                 # Handle list comparison specifically for PushOperation 'items' attribute
-                 elif attr == 'items' and isinstance(expected_value, list) and isinstance(actual_value, list):
-                     assert actual_value == expected_value, \
-                        f"Attribute 'items' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-                 else:
-                     assert actual_value == expected_value, \
-                        f"Attribute '{attr}' mismatch for {op!r}. Expected: {expected_value}, Got: {actual_value}"
-# --- End Test Helper ---
-
+from tests.base.conftest import assert_operation_present
 
 def test_unset_with_type_validation():
     """Test that unset operations are validated for field existence."""
@@ -69,7 +23,7 @@ def test_unset_with_type_validation():
     update.unset("active")
 
     # Non-existent field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError): # Corrected expected exception
+    with pytest.raises(InvalidPathError):  # Corrected expected exception
         update.unset("non_existent")
 
     result = update.build()
@@ -88,11 +42,11 @@ def test_unset_with_nested_fields():
     update.unset("metadata.key1")
 
     # Non-existent nested field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError): # Corrected expected exception
+    with pytest.raises(InvalidPathError):  # Corrected expected exception
         update.unset("metadata.non_existent")
 
     # Non-existent parent field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError): # Corrected expected exception
+    with pytest.raises(InvalidPathError):  # Corrected expected exception
         update.unset("non_existent.field")
 
     result = update.build()
@@ -110,7 +64,7 @@ def test_unset_with_complex_types():
     update.unset("nested.inner.val")
 
     # Non-existent nested field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError): # Corrected expected exception
+    with pytest.raises(InvalidPathError):  # Corrected expected exception
         update.unset("nested.inner.non_existent")
 
     result = update.build()
