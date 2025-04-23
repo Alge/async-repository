@@ -38,6 +38,7 @@ class User:
     points: int
     balance: float
     score: Union[int, float]
+    roles: List[str]
 
     def __init__(
         self,
