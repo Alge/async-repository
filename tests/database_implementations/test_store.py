@@ -1,11 +1,7 @@
 import pytest
-from async_repository.db_implementations.postgresql_repository import PostgreSQLRepository
 from tests.conftest import Entity
 
 from tests.conftest import REPOSITORY_IMPLEMENTATIONS
-
-from tests.create_postgres_tables import create_entity_table
-
 
 @pytest.mark.skip(
     "Does not work, the Entity class generates it's own IDs. Need another test class for this."
@@ -23,9 +19,6 @@ async def test_store_with_none_app_id_when_fields_same(repository_factory, logge
     """
     # Create a repository where app_id_field and db_id_field are the same
     repo = repository_factory(Entity, app_id_field="id", db_id_field="id")
-
-    if isinstance(repo, PostgreSQLRepository):
-        await create_entity_table(pool=repo._pool, app_id_field="id", db_id_field="id")
 
     # Create an entity with id set to None
     entity1 = Entity(name="Test Entity 1")

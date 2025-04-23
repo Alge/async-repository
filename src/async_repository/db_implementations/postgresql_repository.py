@@ -1,4 +1,12 @@
+# src/async_repository/backends/postgres_repository.py
+
+
 import json
+import logging
+import re
+from contextlib import asynccontextmanager
+from dataclasses import is_dataclass
+from datetime import date, datetime
 from logging import LoggerAdapter
 from typing import (
     Any,
@@ -6,67 +14,521 @@ from typing import (
     Dict,
     Generic,
     List,
+    Mapping,
     Optional,
+    Set,
     Tuple,
     Type,
     TypeVar,
-    cast,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
 )
+import asyncio
 
-from asyncpg import Pool, Record
-from asyncpg.exceptions import UniqueViolationError
+# --- asyncpg Driver Import ---
+import asyncpg
 
-from async_repository.base.interfaces import Repository
-from async_repository.base.query import QueryOptions
+# --- Framework Imports ---
 from async_repository.base.exceptions import (
-    ObjectNotFoundException,
     KeyAlreadyExistsException,
+    ObjectNotFoundException,
 )
-from async_repository.base.utils import prepare_for_storage  # <-- Import the helper
+from async_repository.base.interfaces import Repository
+from async_repository.base.model_validator import (
+    InvalidPathError,
+    ModelValidator,
+    _is_none_type,
+)
+from async_repository.base.query import (
+    QueryExpression,
+    QueryFilter,
+    QueryLogical,
+    QueryOperator,
+    QueryOptions,
+)
+from async_repository.base.update import (
+    IncrementOperation,
+    MaxOperation,
+    MinOperation,
+    MultiplyOperation,
+    PopOperation,
+    PullOperation,
+    PushOperation,
+    SetOperation,
+    UnsetOperation,
+    Update,
+    UpdateOperation,
+)
+from async_repository.base.utils import prepare_for_storage
 
+# --- Type Variables ---
 T = TypeVar("T")
+# <<< Only accept Pool now >>>
+DB_POOL_TYPE = asyncpg.Pool
+DB_RECORD_TYPE = asyncpg.Record
+
+base_logger = logging.getLogger("async_repository.backends.postgres_repository")
 
 
-def quote_identifier(identifier: str) -> str:
-    safe_identifier = identifier.replace('"', '""')
-    return f'"{safe_identifier}"'
+# --- Codec Setup ---
+# Set to store IDs of connections where codecs have been set within the pool's lifetime (or repo lifetime)
+_codec_set_conn_ids: Set[int] = set()
+_codec_lock = asyncio.Lock() # Prevent race conditions during first setup across tasks
 
 
-class PostgreSQLRepository(Repository[T], Generic[T]):
+async def _ensure_postgres_codecs(conn: asyncpg.Connection, logger: logging.LoggerAdapter):
+    """Registers JSONB codecs on a connection if not already tracked as set."""
+    conn_id = conn.get_server_pid()
+    # Fast check without lock
+    if conn_id in _codec_set_conn_ids:
+        return
+
+    # Acquire lock for slower check and potential setup
+    async with _codec_lock:
+        # Double check after acquiring lock
+        if conn_id in _codec_set_conn_ids:
+            return
+
+        logger.debug(
+            f"Setting JSONB codec for connection {conn} (ID: {conn_id})"
+        )
+        try:
+            await conn.set_type_codec(
+                'jsonb',
+                encoder=lambda v: json.dumps(v),
+                decoder=lambda s: json.loads(s),
+                schema='pg_catalog',
+                format='text'
+            )
+            _codec_set_conn_ids.add(conn_id) # Mark as set
+        except Exception as e:
+            logger.error(
+                f"Failed to set JSONB codec on {conn}: {e}", exc_info=True
+            )
+            raise RuntimeError("Failed to configure necessary PostgreSQL codecs.") from e
+
+
+class PostgresRepository(Repository[T], Generic[T]):
     """
-    Base PostgreSQL repository implementation.
-    This version supports DSL criteria for updates/deletes and does not handle any timestamp fields.
+    PostgreSQL repository implementation using asyncpg.
+
+    Requires an asyncpg.Pool during initialization and handles connection
+    acquisition/release and JSONB codec setup internally.
+
+    Assumptions: ... (rest of docstring remains the same)
     """
 
+    # --- Initialization ---
     def __init__(
         self,
-        pool: Pool,
+        # <<< Updated Type Hint and Parameter Name >>>
+        db_pool: DB_POOL_TYPE,
         table_name: str,
-        entity_cls: Type[T],
+        entity_type: Type[T],
         app_id_field: str = "id",
-        db_id_field: str = "db_id",
+        db_id_field: Optional[str] = None,
+        db_schema: str = "public",
     ):
-        self._pool = pool
+        """
+        Initialize the PostgreSQL repository with an existing connection pool.
+
+        Args:
+            db_pool: An active asyncpg.Pool object.
+            table_name: The name of the database table.
+            entity_type: The Python class representing the entity.
+            app_id_field: Attribute name for the application ID.
+            db_id_field: Database PK column name (defaults to app_id_field).
+            db_schema: The PostgreSQL schema where the table resides.
+        """
+        # <<< Updated Validation >>>
+        if not isinstance(db_pool, asyncpg.Pool):
+            raise TypeError("db_pool must be an instance of asyncpg.Pool")
+        # Cannot easily check if pool is closed/terminated, assume valid if passed
+
+        self._pool = db_pool # Store the pool
+
         self._table_name = table_name
-        self._entity_cls = entity_cls
+        self._db_schema = db_schema
+        self._entity_type = entity_type
         self._app_id_field = app_id_field
-        self._db_id_field = db_id_field
+        self._db_id_field = (
+            db_id_field if db_id_field is not None else app_id_field
+        )
+        self._qualified_table_name = (
+            f'"{self._db_schema}"."{self._table_name}"'
+        )
 
+        self._logger = logging.getLogger(
+            f"{__name__}.{self.__class__.__name__}[{entity_type.__name__}]"
+        )
+        try:
+            self._validator = ModelValidator(entity_type)
+        except Exception:
+            self._validator = None
+            self._logger.warning(
+                f"Could not initialize ModelValidator for "
+                f"{entity_type.__name__}. Proceeding without validation."
+            )
+
+        self._logger.info(
+            f"Repository instance created (Pool) for "
+            f"{entity_type.__name__} using table "
+            f"'{self._qualified_table_name}' (App ID Field: "
+            f"'{self._app_id_field}', DB PK Field: '{self._db_id_field}')."
+        )
+
+    # --- Abstract Property Implementations ---
     @property
-    def entity_type(self) -> Type[T]:
-        return self._entity_cls
-
+    def entity_type(self) -> Type[T]: return self._entity_type
     @property
-    def app_id_field(self) -> str:
-        return self._app_id_field
-
+    def app_id_field(self) -> str: return self._app_id_field
     @property
-    def db_id_field(self) -> str:
-        return self._db_id_field
+    def db_id_field(self) -> str: return self._db_id_field
 
-    async def initialize(self) -> None:
-        pass
+    # --- Connection/Session Management ---
+    @asynccontextmanager
+    async def _get_session(self) -> AsyncGenerator[asyncpg.Connection, None]:
+        """
+        Acquire connection from the pool, ensure codecs, and release.
+        """
+        conn: Optional[asyncpg.Connection] = None
+        try:
+            # Acquire connection from the pool stored during init
+            conn = await self._pool.acquire()
+            self._logger.debug(f"Acquired connection {conn} from pool.")
 
+            # Ensure codecs are set for this connection
+            await _ensure_postgres_codecs(conn, self._logger)
+
+            yield conn # Provide the connection with codecs ensured
+
+        except Exception as e:
+            self._logger.error(
+                f"Error during connection handling/codec setup: {e}", exc_info=True
+            )
+            # Let specific db operation handlers wrap with _handle_db_error
+            raise
+        finally:
+            # Release connection back to the pool if acquired
+            if conn:
+                try:
+                    await self._pool.release(conn)
+                    self._logger.debug(
+                        f"Released connection {conn} back to pool."
+                    )
+                except Exception as release_error:
+                    self._logger.error(
+                        f"Error releasing connection {conn}: {release_error}",
+                        exc_info=True,
+                    )
+
+
+    # --- Schema and Index Implementation ---
+    async def check_schema(self, logger: LoggerAdapter) -> bool:
+        """Check if the table exists in the specified database schema."""
+        logger.info(f"Checking schema for '{self._qualified_table_name}'...")
+        sql = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+            );
+        """
+        try:
+            async with self._get_session() as conn:
+                exists = await conn.fetchval(
+                    sql, self._db_schema, self._table_name
+                )
+            if exists:
+                logger.info(
+                    f"Schema check PASSED for '{self._qualified_table_name}'."
+                )
+                return True
+            else:
+                logger.warning(
+                    "Schema check FAILED: Table "
+                    f"'{self._qualified_table_name}' not found."
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                "Error during schema check for "
+                f"'{self._qualified_table_name}': {e}",
+                exc_info=True,
+            )
+            self._handle_db_error(
+                e, f"checking schema for {self._qualified_table_name}"
+            )
+            # The following line should not be reached if _handle_db_error raises
+            return False  # pragma: no cover
+
+    async def check_indexes(self, logger: LoggerAdapter) -> bool:
+        """Check if essential indexes (PK on db_id_field) seem to exist."""
+        logger.info(
+            f"Checking essential indexes (PK on '{self.db_id_field}') for "
+            f"'{self._qualified_table_name}'..."
+        )
+        sql = """
+            SELECT a.attname FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid
+                               AND a.attnum = ANY(i.indkey)
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE i.indisprimary AND t.relname = $1 AND n.nspname = $2;
+        """
+        pk_col_found = False
+        try:
+            async with self._get_session() as conn:
+                pk_cols = await conn.fetch(
+                    sql, self._table_name, self._db_schema
+                )
+            for record in pk_cols:
+                if record["attname"] == self.db_id_field:
+                    pk_col_found = True
+                    break
+
+            if pk_col_found:
+                logger.info(
+                    f"Index check PASSED for '{self._qualified_table_name}': "
+                    f"PK includes '{self.db_id_field}'."
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Index check FAILED for '{self._qualified_table_name}': "
+                    f"PK does not include '{self.db_id_field}'."
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                f"Error checking indexes for "
+                f"'{self._qualified_table_name}': {e}",
+                exc_info=True,
+            )
+            self._handle_db_error(
+                e, f"checking indexes for {self._qualified_table_name}"
+            )
+            return False  # pragma: no cover
+
+    async def create_schema(self, logger: LoggerAdapter) -> None:
+        """
+        Create the table if it doesn't exist, inferring columns from type hints.
+        Handles separate app_id_field and db_id_field configuration.
+        """
+        logger.info(
+            "Attempting to create schema (table "
+            f"'{self._qualified_table_name}')..."
+        )
+
+        pk_col = self.db_id_field  # e.g., "_id"
+        # Determine PK column type (e.g., TEXT or maybe UUID?)
+        # For consistency, let's assume TEXT, matching the app_id default
+        pk_col_type = "TEXT"
+        cols_def = [f'"{pk_col}" {pk_col_type} PRIMARY KEY NOT NULL']
+        # Track processed fields to avoid duplication
+        processed_fields = {pk_col}
+
+        try:
+            hints = get_type_hints(self.entity_type)
+        except Exception as e:
+            logger.warning(f"Could not get type hints for schema creation: {e}")
+            hints = {}
+
+        # 1. Explicitly handle the app_id_field if it's different from PK
+        if self.app_id_field != self.db_id_field:
+            app_id_hint = hints.get(self.app_id_field)
+            if app_id_hint:
+                # Determine type and constraints for the app_id column
+                app_id_col_type = "TEXT"  # Default assumption, could check hint
+                is_optional = False
+                origin = get_origin(app_id_hint)
+                if origin is Union and _is_none_type(get_args(app_id_hint)[-1]):
+                    is_optional = True
+                constraint = "" if is_optional else " NOT NULL"
+                # Add UNIQUE constraint for application ID
+                constraint += " UNIQUE"
+
+                cols_def.append(
+                    f'"{self.app_id_field}" {app_id_col_type}{constraint}'
+                )
+                processed_fields.add(self.app_id_field)
+                logger.debug(
+                    f"Added separate column for app_id_field: '{self.app_id_field}'")
+            else:
+                logger.warning(
+                    f"app_id_field '{self.app_id_field}' differs from "
+                    f"db_id_field '{self.db_id_field}' but not found in "
+                    f"model hints. Column not created automatically."
+                )
+
+        # 2. Loop through remaining hints for other columns
+        for name, hint in hints.items():
+            if name in processed_fields:  # Skip PK and already added app_id
+                continue
+            if name.startswith("_"):
+                continue
+
+            # --- Type inference logic (same as before) ---
+            col_type = "TEXT"
+            is_optional = False
+            origin = get_origin(hint)
+            actual_type = hint
+            if origin is Union and hint and _is_none_type(get_args(hint)[-1]):
+                is_optional = True
+                actual_type = get_args(hint)[0]
+                origin = get_origin(actual_type)
+
+            if origin is Union:
+                col_type = "JSONB"
+            elif actual_type is int:
+                col_type = "BIGINT"
+            elif actual_type is float:
+                col_type = "DOUBLE PRECISION"
+            elif actual_type is bool:
+                col_type = "BOOLEAN"
+            elif actual_type is bytes:
+                col_type = "BYTEA"
+            elif actual_type is datetime:
+                col_type = "TIMESTAMP WITH TIME ZONE"
+            elif actual_type is date:
+                col_type = "DATE"
+            elif actual_type in (str, Any):
+                col_type = "TEXT"
+            elif origin in (list, List, dict, Dict, set, Set, tuple, Tuple, Mapping) or \
+                    (isinstance(actual_type, type) and
+                     (issubclass(actual_type, (list, dict, set, tuple)) or
+                      is_dataclass(actual_type) or hasattr(actual_type, 'model_dump'))):
+                col_type = "JSONB"
+            # --- End type inference ---
+
+            constraint = "" if is_optional else " NOT NULL"
+            cols_def.append(f'"{name}" {col_type}{constraint}')
+            processed_fields.add(name)  # Mark as processed
+
+        create_sql = (
+            f"CREATE TABLE IF NOT EXISTS {self._qualified_table_name} "
+            f'({", ".join(cols_def)})'
+        )
+        logger.debug(f"Schema creation SQL: {create_sql}")
+
+        try:
+            async with self._get_session() as conn:
+                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._db_schema}";')
+                logger.info(f"Ensured schema '{self._db_schema}' exists.")
+                await conn.execute(create_sql)
+            logger.info(
+                "Schema creation/verification complete for "
+                f"'{self._qualified_table_name}'."
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to create schema for "
+                f"'{self._qualified_table_name}': {e}",
+                exc_info=True,
+            )
+            self._handle_db_error(
+                e, f"creating schema for {self._qualified_table_name}"
+            )
+
+    async def create_indexes(self, logger: LoggerAdapter) -> None:
+        """Create potentially useful indexes (UNIQUE, GIN)."""
+        logger.info(
+            "Attempting to create indexes for "
+            f"'{self._qualified_table_name}'..."
+        )
+        indexes_to_create: List[str] = []
+        jsonb_cols_for_gin: List[str] = []
+
+        # Check for distinct app_id_field needing a unique index
+        # This check remains the same, but now the column should actually exist
+        # because create_schema added it.
+        if self.app_id_field != self.db_id_field:
+            field_exists_in_hints = False
+            try:
+                hints = get_type_hints(self.entity_type)
+                field_exists_in_hints = self.app_id_field in hints
+            except Exception:
+                pass  # Ignore hint errors, proceed if field names differ
+
+            # We attempt index creation if names differ, assuming create_schema
+            # added the column (or it exists manually). The CREATE INDEX command
+            # will fail if the column truly doesn't exist.
+            if field_exists_in_hints:
+                idx_name = f"idx_{self._table_name}_{self.app_id_field}_unique"
+                # Important: The column name here MUST be self.app_id_field ("id")
+                sql = (
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "{idx_name}" ON '
+                    f'{self._qualified_table_name}("{self.app_id_field}");'
+                )
+                indexes_to_create.append(sql)
+                logger.info(
+                    f"Defining unique index on separate app_id_field "
+                    f"'{self.app_id_field}'."
+                )
+            else:
+                logger.info(
+                    f"Skipping unique index on app_id_field '{self.app_id_field}' as it's not found in model hints (column might not exist).")
+
+        # --- (Rest of the GIN index identification logic remains the same) ---
+        try:
+            hints = get_type_hints(self.entity_type)
+        except Exception as e:
+            logger.warning(f"Could not get hints for GIN indexing: {e}")
+            hints = {}
+        for name, hint in hints.items():
+            if name == self.db_id_field or (
+                    name == self.app_id_field): continue  # Skip PK and app_id
+            if name.startswith("_"): continue
+            actual_type = hint;
+            origin = get_origin(hint)
+            if origin is Union and hint and _is_none_type(
+                get_args(hint)[-1]): actual_type = get_args(hint)[
+                0]; origin = get_origin(actual_type)
+            if origin is Union or origin in (list, List, dict, Dict, set, Set, tuple,
+                                             Tuple, Mapping) or \
+                    (isinstance(actual_type, type) and (issubclass(actual_type,
+                                                                   (list, dict, set,
+                                                                    tuple)) or is_dataclass(
+                        actual_type) or hasattr(actual_type, 'model_dump'))):
+                jsonb_cols_for_gin.append(name)
+        for col_name in jsonb_cols_for_gin:
+            idx_name = f"idx_{self._table_name}_{col_name}_gin"
+            sql = (
+                f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {self._qualified_table_name} USING GIN ("{col_name}");')
+            indexes_to_create.append(sql)
+            logger.info(f"Defining GIN index on JSONB column '{col_name}'.")
+        # --- End GIN index logic ---
+
+        if not indexes_to_create:
+            logger.info(
+                f"No explicit indexes defined for creation on "
+                f"'{self._qualified_table_name}'."
+            )
+            return
+
+        try:
+            async with self._get_session() as conn:
+                async with conn.transaction():
+                    for sql in indexes_to_create:
+                        logger.debug(f"Executing index SQL: {sql}")
+                        await conn.execute(sql)
+            logger.info(
+                "Explicit index creation/verification complete for "
+                f"'{self._qualified_table_name}'."
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to create indexes for "
+                f"'{self._qualified_table_name}': {e}",
+                exc_info=True,
+            )
+            # Let _handle_db_error raise the appropriate exception
+            self._handle_db_error(
+                e, f"creating indexes for {self._qualified_table_name}"
+            )
+
+    # --- Core CRUD Method Implementations ---
     async def get(
         self,
         id: str,
@@ -74,233 +536,482 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         timeout: Optional[float] = None,
         use_db_id: bool = False,
     ) -> T:
-        field = self._db_id_field if use_db_id else self._app_id_field
-        logger.debug(f"Getting {self._entity_cls.__name__} with {field}: {id}")
-        query = (
-            f"SELECT * FROM {quote_identifier(self._table_name)} "
-            f"WHERE {quote_identifier(field)} = $1"
+        """Retrieve an entity by its application or database ID."""
+        field_to_match = self.db_id_field if use_db_id else self.app_id_field
+        id_type_str = (
+            "database (PK)" if use_db_id else f"application ('{field_to_match}')"
         )
-        params = [id]
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, *params)
-        if not row:
-            id_type = "database" if use_db_id else "application"
-            raise ObjectNotFoundException(
-                f"{self._entity_cls.__name__} with {id_type} ID {id} not found"
+        logger.debug(
+            f"Getting {self.entity_type.__name__} by {id_type_str}='{id}' "
+            f"using column '{field_to_match}'"
+        )
+
+        query = (
+            f'SELECT * FROM {self._qualified_table_name} '
+            f'WHERE "{field_to_match}" = $1 LIMIT 1'
+        )
+        params = (id,)
+
+        try:
+            async with self._get_session() as conn:
+                record_data = await conn.fetchrow(
+                    query, *params, timeout=timeout
+                )
+
+            if record_data is None:
+                logger.warning(f"{self.entity_type.__name__} '{id}' not found.")
+                raise ObjectNotFoundException(
+                    f"{self.entity_type.__name__} with ID '{id}' not found."
+                )
+
+            entity = self._deserialize_record(record_data)
+            logger.info(f"Retrieved {self.entity_type.__name__} '{id}'.")
+            return entity
+        except ObjectNotFoundException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error during get operation (id={id}, use_db_id={use_db_id}):"
+                f" {e}",
+                exc_info=True,
             )
-        return self._row_to_entity(row)
+            self._handle_db_error(e, f"getting entity ID {id}")
+            raise  # pragma: no cover
 
     async def get_by_db_id(
         self, db_id: Any, logger: LoggerAdapter, timeout: Optional[float] = None
     ) -> T:
-        return await self.get(db_id, logger, timeout, use_db_id=True)
+        """Retrieve an entity specifically by its database primary key ID."""
+        logger.debug(
+            f"Getting {self.entity_type.__name__} by DB ID '{db_id}' "
+            f"(using PK column '{self.db_id_field}')"
+        )
+        return await self.get(
+            id=str(db_id), logger=logger, timeout=timeout, use_db_id=True
+        )
 
     async def store(
         self,
         entity: T,
         logger: LoggerAdapter,
         timeout: Optional[float] = None,
-        generate_app_id: bool = True,  # still accepted for backwards compatibility
+        generate_app_id: bool = True,
         return_value: bool = False,
     ) -> Optional[T]:
+        """Store a new entity, generating ID if needed."""
         self.validate_entity(entity)
-        entity_dict = self._entity_to_dict(entity)
-        # Convert special types to storage-compatible formats
-        entity_dict = prepare_for_storage(entity_dict)
-        # Remove id fields if they are None so the database default can be applied.
-        if (
-            self._app_id_field in entity_dict
-            and entity_dict[self._app_id_field] is None
-        ):
-            del entity_dict[self._app_id_field]
-        if self._db_id_field in entity_dict and entity_dict[self._db_id_field] is None:
-            del entity_dict[self._db_id_field]
-        # Timestamps removed.
-        fields = list(entity_dict.keys())
-        values = list(entity_dict.values())
-        placeholders = [f"${i + 1}" for i in range(len(fields))]
-        query = (
-            f"INSERT INTO {quote_identifier(self._table_name)} "
-            f"({', '.join(quote_identifier(f) for f in fields)}) "
-            f"VALUES ({', '.join(placeholders)})"
+        app_id = getattr(entity, self.app_id_field, None)
+
+        if generate_app_id and app_id is None:
+            app_id = self.id_generator()
+            setattr(entity, self.app_id_field, app_id)
+            logger.debug(f"Generated ID '{app_id}' for new {entity}.")
+        elif app_id is None:
+            raise ValueError("Entity missing ID field and generate_app_id=False.")
+
+        db_id_value = getattr(entity, self.app_id_field)
+        logger.debug(
+            f"Storing new {self.entity_type.__name__} with "
+            f"{self.app_id_field}='{app_id}' (PK '{self.db_id_field}')"
         )
         try:
-            async with self._pool.acquire() as conn:
-                if return_value:
-                    query_returning = query + " RETURNING *"
-                    row = await conn.fetchrow(query_returning, *values)
-                else:
-                    await conn.execute(query, *values)
-        except UniqueViolationError as e:
-            if self._app_id_field in str(e):
-                field_name = self._app_id_field
-                id_value = entity_dict.get(self._app_id_field)
-            elif self._db_id_field in str(e):
-                field_name = self._db_id_field
-                id_value = entity_dict.get(self._db_id_field)
-            else:
-                field_name = "unknown"
-                id_value = "unknown"
-            raise KeyAlreadyExistsException(
-                f"{self._entity_cls.__name__} with {field_name} {id_value} already exists"
+            db_data = self._serialize_entity(entity)
+            db_data[self.db_id_field] = db_id_value
+
+            cols = list(db_data.keys())
+            cols_clause = ", ".join(f'"{k}"' for k in cols)
+            placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
+            query = (
+                f"INSERT INTO {self._qualified_table_name} ({cols_clause}) "
+                f"VALUES ({placeholders})"
             )
-        if return_value:
-            return self._row_to_entity(row) if row else None
-        else:
-            return None
+            params = tuple(db_data[k] for k in cols)
+
+            async with self._get_session() as conn:
+                await conn.execute(query, *params, timeout=timeout)
+
+            logger.info(
+                f"Stored new {self.entity_type.__name__} ID '{app_id}'. "
+                "(Commit handled externally)"
+            )
+            return entity if return_value else None
+
+        except asyncpg.UniqueViolationError as e:
+            # Basic check focusing on the PK column name
+            if self.db_id_field in str(e.detail or "") or (
+                e.constraint_name and f"{self._table_name}_pkey" in e.constraint_name
+            ):
+                logger.warning(
+                    f"Failed to store {self.entity_type.__name__} PK "
+                    f"'{db_id_value}': {e}"
+                )
+                raise KeyAlreadyExistsException(
+                    f"Entity with ID '{app_id}' already exists."
+                ) from e
+            else:
+                # Other unique constraint violation
+                logger.error(
+                    f"Unique constraint violation storing entity "
+                    f"(app_id {app_id}): {e}",
+                    exc_info=True,
+                )
+                self._handle_db_error(e, f"storing entity app_id {app_id}")
+                raise  # Should not be reached
+
+        except Exception as e:
+            logger.error(
+                f"Error storing entity (app_id {app_id}): {e}", exc_info=True
+            )
+            self._handle_db_error(e, f"storing entity app_id {app_id}")
+            raise  # Should not be reached
 
     async def upsert(
         self,
         entity: T,
         logger: LoggerAdapter,
         timeout: Optional[float] = None,
-        generate_app_id: bool = True,  # still accepted for backwards compatibility
+        generate_app_id: bool = True,
     ) -> None:
+        """Insert or update an entity based on its ID (using ON CONFLICT)."""
         self.validate_entity(entity)
-        entity_dict = self._entity_to_dict(entity)
-        # Convert special types to storage-compatible formats
-        entity_dict = prepare_for_storage(entity_dict)
-        # Remove id fields if they are None so that the database default can be applied.
-        if (
-            self._app_id_field in entity_dict
-            and entity_dict[self._app_id_field] is None
-        ):
-            del entity_dict[self._app_id_field]
-        if self._db_id_field in entity_dict and entity_dict[self._db_id_field] is None:
-            del entity_dict[self._db_id_field]
-        # Timestamps removed.
-        fields = list(entity_dict.keys())
-        values = list(entity_dict.values())
-        placeholders = [f"${i + 1}" for i in range(len(fields))]
+        app_id = getattr(entity, self.app_id_field, None)
+
+        if generate_app_id and app_id is None:
+            app_id = self.id_generator()
+            setattr(entity, self.app_id_field, app_id)
+            logger.debug(f"Generated potential ID '{app_id}' for upsert.")
+        elif app_id is None:
+            raise ValueError("Entity for upsert must have ID.")
+
+        db_id_value = getattr(entity, self.app_id_field)
         logger.debug(
-            f"Upserting {self._entity_cls.__name__}: {entity_dict.get(self._app_id_field)}"
+            f"Upserting {self.entity_type.__name__} with "
+            f"{self.app_id_field}='{app_id}' (PK '{self.db_id_field}')"
         )
-        query = (
-            f"INSERT INTO {quote_identifier(self._table_name)} "
-            f"({', '.join(quote_identifier(f) for f in fields)}) "
-            f"VALUES ({', '.join(placeholders)}) "
-            f"ON CONFLICT ({quote_identifier(self._app_id_field)}) DO UPDATE "
-            f"SET ({', '.join(quote_identifier(f) for f in fields)}) = ({', '.join(placeholders)})"
-        )
-        async with self._pool.acquire() as conn:
-            await conn.execute(query, *values)
+        try:
+            db_data = self._serialize_entity(entity)
+            db_data[self.db_id_field] = db_id_value
+
+            cols = list(db_data.keys())
+            cols_clause = ", ".join(f'"{k}"' for k in cols)
+            placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
+            params = tuple(db_data[k] for k in cols)
+
+            update_cols = [k for k in cols if k != self.db_id_field]
+            if not update_cols:
+                update_clause_str = "DO NOTHING"
+            else:
+                set_clause = ", ".join(
+                    f'"{k}" = excluded."{k}"' for k in update_cols
+                )
+                update_clause_str = f"DO UPDATE SET {set_clause}"
+
+            query = (
+                f"INSERT INTO {self._qualified_table_name} ({cols_clause}) "
+                f"VALUES ({placeholders}) "
+                f'ON CONFLICT ("{self.db_id_field}") {update_clause_str}'
+            )
+
+            async with self._get_session() as conn:
+                await conn.execute(query, *params, timeout=timeout)
+
+            logger.info(
+                f"Upserted {self.entity_type.__name__} ID '{app_id}'. "
+                "(Commit handled externally)"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error upserting entity (app_id {app_id}): {e}", exc_info=True
+            )
+            self._handle_db_error(e, f"upserting entity app_id {app_id}")
+            raise  # Should not be reached
+
+        # src/async_repository/backends/postgres_repository.py (within PostgresRepository class)
 
     async def update_one(
-        self,
-        options: QueryOptions,
-        update: "Update",
-        logger: LoggerAdapter,
-        timeout: Optional[float] = None,
-        return_value: bool = False,
+            self,
+            options: QueryOptions,
+            update: Update,
+            logger: LoggerAdapter,
+            timeout: Optional[float] = None,
+            return_value: bool = False,
     ) -> Optional[T]:
         """
-        Update specific fields of a single entity matching the provided QueryOptions.
-        Uses a CTE to limit the update to one record.
+        Update single entity matching criteria using CTE for safety.
+
+        Handles potential sorting/offset before update and returns the
+        updated entity if requested.
         """
         logger.debug(
-            f"Updating one {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}"
+            f"Updating one {self.entity_type.__name__} matching: {options!r} "
+            f"with update: {update!r}"
         )
-        if not options.expression:
-            raise ValueError("QueryOptions must include an 'expression' for update.")
-        where_clause, params, _ = self._transform_expression(options.expression, 1)
-        # Build SET clause from update payload.
-        update_payload = update.build()
-        # Apply the helper to update payload to convert special types (like URL types) to strings.
-        update_payload = prepare_for_storage(update_payload)
-        set_clause, set_params = self._build_set_clause(update_payload, len(params) + 1)
-        cte = f"WITH cte AS (SELECT {quote_identifier(self._app_id_field)} FROM {quote_identifier(self._table_name)} WHERE {where_clause} LIMIT 1)"
-        update_query = (
-            f"{cte} UPDATE {quote_identifier(self._table_name)} SET {set_clause} "
-            f"FROM cte WHERE {quote_identifier(self._table_name)}.{quote_identifier(self._app_id_field)} = cte.{quote_identifier(self._app_id_field)}"
-        )
-        if return_value:
-            update_query += " RETURNING *"
-        async with self._pool.acquire() as conn:
+        if not update:
+            logger.warning("update_one called with empty update operations.")
             if return_value:
-                row = await conn.fetchrow(update_query, *(params + set_params))
-                if not row:
-                    raise ObjectNotFoundException(
-                        f"{self._entity_cls.__name__} not found with criteria {options.expression}"
-                    )
-                return self._row_to_entity(row)
-            else:
-                result = await conn.execute(update_query, *(params + set_params))
-                if result == "UPDATE 0":
-                    raise ObjectNotFoundException(
-                        f"{self._entity_cls.__name__} not found with criteria {options.expression}"
-                    )
+                # Find and return the existing entity if requested
+                return await self.find_one(logger=logger, options=options)
+            return None
+        if not options.expression:
+            raise ValueError(
+                "QueryOptions must include an 'expression' for update_one."
+            )
+
+        try:
+            # Prepare options for finding the single target row ID
+            find_options = options.copy()
+            find_options.limit = 1
+            find_options.offset = find_options.offset or 0
+
+            # Translate query and update parts separately
+            find_parts = self._translate_query_options(
+                find_options, include_sorting_pagination=True
+            )
+            update_parts = self._translate_update(update)
+
+            if not update_parts.get("set"):
+                logger.warning("Update resulted in no SET clauses.")
+                if return_value:
+                    # Find and return the existing entity if requested
+                    return await self.find_one(logger=logger, options=options)
                 return None
+
+            # --- Parameter Re-indexing and Ordering ---
+            param_idx = 1  # Start parameter indexing at $1
+
+            # 1. Process WHERE clause first
+            where_clause, where_params, param_idx = self._build_where_clause(
+                find_parts, param_idx
+            )
+
+            # 2. Process LIMIT/OFFSET (if any) and add their params
+            limit_offset_params = []
+            limit_clause = ""
+            offset_clause = ""
+            if find_parts.get("limit", -1) >= 0:
+                limit_clause = f"LIMIT ${param_idx}"
+                limit_offset_params.append(find_parts["limit"])
+                param_idx += 1
+            if find_parts.get("offset", 0) > 0:
+                offset_clause = f"OFFSET ${param_idx}"
+                limit_offset_params.append(find_parts["offset"])
+                param_idx += 1
+
+            order_clause = (
+                f"ORDER BY {find_parts['order']}" if find_parts.get("order") else ""
+            )
+
+            # 3. Process SET clause, re-indexing its params starting from current param_idx
+            # _reindex_params returns the modified clause, original params list, and next index
+            set_clause, set_params_ordered, next_param_idx = self._reindex_params(
+                update_parts["set"], update_parts["params"], param_idx
+            )
+            # param_idx is now updated for subsequent clauses if needed
+
+            # 4. Assemble the final parameter list IN ORDER
+            all_params = (
+                    where_params + limit_offset_params + set_params_ordered
+            )
+            # --- End Parameter Re-indexing ---
+
+            returning_clause = "RETURNING *" if return_value else ""
+
+            # Use CTE to select the PK, respecting order/limit/offset
+            # Ensures only the intended single row is updated.
+            sql = f"""
+                WITH target AS (
+                    SELECT "{self.db_id_field}"
+                    FROM {self._qualified_table_name}
+                    {where_clause}
+                    {order_clause}
+                    {limit_clause}
+                    {offset_clause}
+                )
+                UPDATE {self._qualified_table_name} AS t
+                SET {set_clause}
+                WHERE t."{self.db_id_field}" =
+                      (SELECT "{self.db_id_field}" FROM target)
+                {returning_clause};
+            """
+
+            logger.debug(f"Executing update_one: SQL='{sql}', Params={all_params}")
+
+            final_sql_debug = sql.replace('\n', ' ').replace('    ',
+                                                             '')  # Clean up for logging
+            logger.debug(
+                f"!!! DEBUG update_one SQL: {final_sql_debug}")  # Use CRITICAL to ensure visibility
+            logger.debug(f"!!! DEBUG update_one Params: {all_params}")
+
+            async with self._get_session() as conn:
+                if return_value:
+                    # Use fetchrow when RETURNING * is expected
+                    updated_record = await conn.fetchrow(
+                        sql, *all_params, timeout=timeout
+                    )
+                    if updated_record is None:
+                        # This implies the row selected by the CTE subquery
+                        # didn't exist or couldn't be updated (e.g., deleted
+                        # concurrently, though less likely with CTE).
+                        logger.warning(
+                            f"Update target matching criteria was not found "
+                            f"during update execution (or disappeared): "
+                            f"{options.expression!r}"
+                        )
+                        raise ObjectNotFoundException(
+                            f"No {self.entity_type.__name__} found matching "
+                            f"criteria for update (or disappeared): "
+                            f"{options.expression!r}"
+                        )
+                    entity = self._deserialize_record(updated_record)
+                    pk_val = getattr(entity, self.db_id_field, "?")
+                    logger.info(
+                        f"Updated and retrieved {self.entity_type.__name__} "
+                        f"PK '{pk_val}'."
+                    )
+                    return entity
+                else:
+                    status = await conn.execute(
+                        sql, *all_params, timeout=timeout
+                    )
+                    # Parse status string like 'UPDATE 1'
+                    match = re.match(r"UPDATE\s+(\d+)", status or "")
+                    updated_count = -1  # Default to unknown
+                    if match:
+                        try:
+                            updated_count = int(match.group(1))
+                        except (ValueError, IndexError):
+                            logger.warning(
+                                f"Could not parse update count from status: {status}")
+                    else:
+                        logger.warning(
+                            f"Update status string format unexpected: {status}")
+
+                    if updated_count == 1:
+                        logger.info(
+                            "Updated one matching entity. "
+                            "(Commit handled externally)"
+                        )
+                        return None
+                    elif updated_count == 0:
+                        # If the CTE found a row but UPDATE affected 0, it's problematic.
+                        logger.warning(
+                            f"Update target matching criteria was not found "
+                            f"during update execution (possible race condition "
+                            f"or CTE issue): {options.expression!r}"
+                        )
+                        # Raise ObjectNotFoundException because the intended target wasn't updated
+                        raise ObjectNotFoundException(
+                            f"No {self.entity_type.__name__} found matching "
+                            f"criteria for update (or disappeared/failed): "
+                            f"{options.expression!r}"
+                        )
+                    else:  # updated_count is -1 or some other number
+                        # This case is ambiguous. Log a warning but assume okay if no error raised.
+                        logger.warning(
+                            f"Update operation status parsing resulted in count {updated_count} "
+                            f"(Status: {status}). Assuming success as no error was raised."
+                        )
+                        return None
+
+        except ObjectNotFoundException:
+            # Catch specific exception raised within this method or find_one
+            logger.warning(
+                f"ObjectNotFoundException during update_one for filter: "
+                f"{options.expression!r}"
+            )
+            raise  # Propagate ObjectNotFoundException
+        except Exception as e:
+            # Catch other DB errors or translation errors
+            logger.error(
+                f"Error updating one entity (filter: {options.expression!r}): {e}",
+                exc_info=True
+            )
+            self._handle_db_error(e, "updating one entity")
+            raise  # Should not be reached if _handle_db_error raises
+
+
 
     async def update_many(
         self,
         options: QueryOptions,
-        update: "Update",
+        update: Update,
         logger: LoggerAdapter,
         timeout: Optional[float] = None,
     ) -> int:
-        """
-        Update specific fields of all entities matching the provided QueryOptions.
-        If limit/offset/sort are provided, updates only the subset of IDs.
-        Returns the number of entities updated.
-        """
+        """Update multiple entities matching the criteria."""
         logger.debug(
-            f"Updating many {self._entity_cls.__name__} with options: {options.expression}, update: {update.build()}"
+            f"Updating many {self.entity_type.__name__} matching: {options!r} "
+            f"with update: {update!r}"
         )
-        if not options.expression:
-            raise ValueError("QueryOptions must include an 'expression' for update.")
-
-        # If limit/offset/sort/random_order are provided, retrieve specific IDs first.
-        if (
-            options.limit > 0
-            or options.offset > 0
-            or options.sort_by
-            or options.random_order
-        ):
-            where_clause, params, _ = self._transform_expression(options.expression, 1)
-            order_clause = ""
-            if options.random_order:
-                order_clause = " ORDER BY RANDOM()"
-            elif options.sort_by:
-                sort_field = options.sort_by
-                if sort_field == "id" and self.app_id_field != "id":
-                    sort_field = self.app_id_field
-                elif sort_field == "db_id" and self.db_id_field != "db_id":
-                    sort_field = self.db_id_field
-                direction = "DESC" if options.sort_desc else "ASC"
-                order_clause = f" ORDER BY {quote_identifier(sort_field)} {direction}"
-            limit_clause = f" LIMIT {options.limit}" if options.limit > 0 else ""
-            offset_clause = f" OFFSET {options.offset}" if options.offset > 0 else ""
-            id_query = (
-                f"SELECT {quote_identifier(self.db_id_field)} FROM {quote_identifier(self._table_name)} "
-                f"WHERE {where_clause}{order_clause}{limit_clause}{offset_clause}"
-            )
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(id_query, *params)
-            if not rows:
-                return 0
-            ids = [row[self.db_id_field] for row in rows]
-            placeholders = [f"${i}" for i in range(1, len(ids) + 1)]
-            where_clause = (
-                f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
-            )
-            params = ids
-        else:
-            where_clause, params, _ = self._transform_expression(options.expression, 1)
-
-        update_payload = update.build()
-        # Apply the helper method to update payload.
-        update_payload = prepare_for_storage(update_payload)
-        set_clause, set_params = self._build_set_clause(update_payload, len(params) + 1)
-        query = (
-            f"UPDATE {quote_identifier(self._table_name)} SET {set_clause} "
-            f"WHERE {where_clause}"
-        )
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(query, *(params + set_params))
-            parts = result.split()
-            if len(parts) == 2 and parts[0] == "UPDATE":
-                return int(parts[1])
+        if not update:
+            logger.warning("update_many called with empty update.")
             return 0
+        # <<< Corrected check for expression >>>
+        # Original check was correct, but the test expects a specific message
+        if not options.expression:
+            # Raise the exact error message the test expects
+            raise ValueError(
+                "QueryOptions must include an 'expression' for update_many."
+            )
+
+        if options.limit is not None or options.offset is not None or options.sort_by:
+            logger.warning("limit/offset/sort_by ignored for update_many.")
+
+        try:
+            param_idx = 1
+            find_parts = self._translate_query_options(options, False)
+            update_parts = self._translate_update(update)
+
+            where_clause, where_params, param_idx = self._build_where_clause(
+                find_parts, param_idx
+            )
+
+            # <<< Apply the same fix as in update_one >>>
+            # Unpack all 3 return values from _reindex_params
+            set_clause, set_params_ordered, next_param_idx = self._reindex_params(
+                update_parts["set"], update_parts["params"], param_idx
+            )
+            # We don't use next_param_idx here, but need to unpack it
+
+            # <<< Adjusted safety check >>>
+            # Check where_clause specifically, not the whole find_parts dict
+            if not where_clause or where_clause == "WHERE 1=1":
+                 raise ValueError(
+                    "Cannot update_many without a specific filter expression "
+                    "(safety check)."
+                 )
+            if not set_clause:
+                 logger.warning("Update resulted in no SET clauses.")
+                 return 0
+
+            sql = (
+                f"UPDATE {self._qualified_table_name} "
+                f"SET {set_clause} {where_clause}"
+            )
+            # Use the correctly ordered parameters
+            all_params = where_params + set_params_ordered
+
+            logger.debug(f"Executing update_many: SQL='{sql}', Params={all_params}")
+            async with self._get_session() as conn:
+                 status = await conn.execute(sql, *all_params, timeout=timeout)
+                 match = re.match(r"UPDATE (\d+)", status or "") # Add `or ""`
+                 affected_count = int(match.group(1)) if match else 0
+
+            logger.info(
+                f"Updated {affected_count} {self.entity_type.__name__}(s). "
+                "(Commit handled externally)"
+            )
+            return affected_count
+        except ValueError as e:
+            # Handle the specific ValueError raised for missing expression
+            logger.error(f"ValueError during update_many: {e}")
+            self._handle_db_error(e, "updating many entities (validation)")
+            raise # Re-raise ValueError after logging/handling
+        except Exception as e:
+            logger.error(f"Error updating many entities: {e}", exc_info=True)
+            self._handle_db_error(e, "updating many entities")
+            raise # pragma: no cover
+
 
     async def delete_many(
         self,
@@ -308,734 +1019,865 @@ class PostgreSQLRepository(Repository[T], Generic[T]):
         logger: LoggerAdapter,
         timeout: Optional[float] = None,
     ) -> int:
-        """
-        Delete entities matching the provided QueryOptions.
-        If a limit/offset/sort is provided, deletes only that subset.
-        Returns the count of deleted entities.
-        """
+        """Delete multiple entities matching the criteria."""
         logger.debug(
-            f"Deleting many {self._entity_cls.__name__} with options: {options.expression}"
+            f"Deleting many {self.entity_type.__name__}(s) matching: {options!r}"
         )
         if not options.expression:
-            raise ValueError("QueryOptions must include an 'expression' for delete.")
+            raise ValueError("QueryOptions needs 'expression' for delete_many.")
 
-        # If limit, offset, sort, or random_order is provided, select specific IDs.
-        if (
-            options.limit > 0
-            or options.offset > 0
-            or options.sort_by
-            or options.random_order
-        ):
-            where_clause, params, _ = self._transform_expression(options.expression, 1)
-            order_clause = ""
-            if options.random_order:
-                order_clause = " ORDER BY RANDOM()"
-            elif options.sort_by:
-                sort_field = options.sort_by
-                if sort_field == "id" and self.app_id_field != "id":
-                    sort_field = self.app_id_field
-                elif sort_field == "db_id" and self.db_id_field != "db_id":
-                    sort_field = self.db_id_field
-                direction = "DESC" if options.sort_desc else "ASC"
-                order_clause = f" ORDER BY {quote_identifier(sort_field)} {direction}"
-            limit_clause = f" LIMIT {options.limit}" if options.limit > 0 else ""
-            offset_clause = f" OFFSET {options.offset}" if options.offset > 0 else ""
-            id_query = (
-                f"SELECT {quote_identifier(self.db_id_field)} FROM {quote_identifier(self._table_name)} "
-                f"WHERE {where_clause}{order_clause}{limit_clause}{offset_clause}"
-            )
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(id_query, *params)
-            if not rows:
-                return 0
-            ids = [row[self.db_id_field] for row in rows]
-            placeholders = [f"${i}" for i in range(1, len(ids) + 1)]
-            where_clause = (
-                f"{quote_identifier(self.db_id_field)} IN ({', '.join(placeholders)})"
-            )
-            params = ids
-        else:
-            where_clause, params, _ = self._transform_expression(options.expression, 1)
+        if options.limit is not None or options.offset is not None or options.sort_by:
+            logger.warning("limit/offset/sort_by ignored for delete_many.")
 
-        query = f"DELETE FROM {quote_identifier(self._table_name)} WHERE {where_clause}"
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(query, *params)
-            parts = result.split()
-            if len(parts) == 2 and parts[0] == "DELETE":
-                return int(parts[1])
-            return 0
-
-    async def delete_one(
-        self,
-        id: str,
-        logger: LoggerAdapter,
-        timeout: Optional[float] = None,
-        use_db_id: bool = False,
-    ) -> None:
-        """
-        Delete a single entity from the repository by reusing delete_many with a limit of 1.
-        """
-        field = self._db_id_field if use_db_id else self._app_id_field
-        filter_opts = QueryOptions(
-            expression={field: {"operator": "eq", "value": id}}, limit=1, offset=0
-        )
-        count_deleted = await self.delete_many(filter_opts, logger, timeout)
-        if count_deleted == 0:
-            raise ObjectNotFoundException(
-                f"{self._entity_cls.__name__} with ID {id} not found"
+        try:
+            param_idx = 1
+            find_parts = self._translate_query_options(options, False)
+            where_clause, where_params, param_idx = self._build_where_clause(
+                find_parts, param_idx
             )
-        elif count_deleted > 1:
-            logger.warning(f"delete_one: More than one document deleted for ID {id}")
+
+            if not where_clause or where_clause == "WHERE 1=1":
+                raise ValueError("delete_many requires a specific filter.")
+
+            sql = f"DELETE FROM {self._qualified_table_name} {where_clause}"
+            all_params = where_params
+
+            logger.debug(f"Executing delete_many: SQL='{sql}', Params={all_params}")
+            async with self._get_session() as conn:
+                status = await conn.execute(sql, *all_params, timeout=timeout)
+                match = re.match(r"DELETE (\d+)", status)
+                affected_count = int(match.group(1)) if match else 0
+
+            logger.info(
+                f"Deleted {affected_count} {self.entity_type.__name__}(s). "
+                "(Commit handled externally)"
+            )
+            return affected_count
+        except Exception as e:
+            logger.error(f"Error deleting many entities: {e}", exc_info=True)
+            self._handle_db_error(e, "deleting many entities")
+            raise  # pragma: no cover
 
     async def list(
         self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> AsyncGenerator[T, None]:
-        options = options or QueryOptions()
-        logger.debug(
-            f"Listing {self._entity_cls.__name__} with options: {options.__dict__}"
-        )
-        query, params = self._build_query(options)
-        logger.debug(f"SQL query: {query}")
-        logger.debug(f"SQL params: {params}")
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(query, *params)
-            for row in rows:
-                yield self._row_to_entity(row)
+        """List entities matching criteria, with sorting and pagination."""
+        effective_options = options or QueryOptions()
+        logger.debug(f"Listing {self.entity_type.__name__}(s): {options!r}")
+
+        try:
+            param_idx = 1
+            query_parts = self._translate_query_options(effective_options, True)
+            where_clause, where_params, param_idx = self._build_where_clause(
+                query_parts, param_idx
+            )
+            order_clause = (
+                f"ORDER BY {query_parts['order']}" if query_parts.get("order") else ""
+            )
+            limit_clause = (
+                f"LIMIT ${param_idx}" if query_parts.get("limit", -1) >= 0 else ""
+            )
+            offset_clause = (
+                f"OFFSET ${param_idx + (1 if limit_clause else 0)}"
+                if query_parts.get("offset", 0) > 0
+                else ""
+            )
+
+            all_params = list(where_params)
+            if limit_clause:
+                all_params.append(query_parts["limit"])
+            if offset_clause:
+                all_params.append(query_parts["offset"])
+
+            sql = (
+                f"SELECT * FROM {self._qualified_table_name} {where_clause} "
+                f"{order_clause} {limit_clause} {offset_clause}"
+            )
+
+            logger.debug(f"Executing list query: SQL='{sql}', Params={all_params}")
+            async with self._get_session() as conn:
+                # Cursor needs transaction in asyncpg > 0.24.0 ? Check docs.
+                # Using fetch for simplicity unless cursor proven necessary.
+                # async with conn.transaction(): # If using cursor
+                #     async for record_data in conn.cursor(sql, *all_params, timeout=effective_options.timeout):
+                #         # ... yield ...
+                records = await conn.fetch(
+                    sql, *all_params, timeout=effective_options.timeout
+                )
+                for record_data in records:
+                    try:
+                        yield self._deserialize_record(record_data)
+                    except Exception as deserialization_error:
+                        logger.error(
+                            f"Failed to deserialize record during list: "
+                            f"{deserialization_error}. Record: {dict(record_data)}",
+                            exc_info=True,
+                        )
+                        continue
+        except Exception as e:
+            logger.error(f"Error listing entities: {e}", exc_info=True)
+            self._handle_db_error(e, "listing entities")
+            raise  # pragma: no cover
 
     async def count(
         self, logger: LoggerAdapter, options: Optional[QueryOptions] = None
     ) -> int:
-        options = options or QueryOptions()
-        logger.debug(
-            f"Counting {self._entity_cls.__name__} with options: {options.__dict__}"
-        )
-        if options.expression:
-            base_query, params, _ = self._transform_expression(options.expression, 1)
-        else:
-            base_query, params = self._build_base_query(options)
-        count_query = f"SELECT COUNT(*) FROM {quote_identifier(self._table_name)}"
-        if base_query:
-            count_query += f" WHERE {base_query}"
-        async with self._pool.acquire() as conn:
-            result = await conn.fetchval(count_query, *params)
-        return cast(int, result)
+        """Count entities matching the criteria."""
+        effective_options = options or QueryOptions()
+        logger.debug(f"Counting {self.entity_type.__name__}(s): {options!r}")
 
-    def _build_query(self, options: QueryOptions) -> Tuple[str, List[Any]]:
-        if options.expression:
-            where_clause, params, _ = self._transform_expression(options.expression, 1)
-        else:
-            where_clause, params = self._build_base_query(options)
-        query = f"SELECT * FROM {quote_identifier(self._table_name)}"
-        if where_clause:
-            query += f" WHERE {where_clause}"
-        if options.random_order:
-            query += " ORDER BY RANDOM()"
-        elif options.sort_by:
-            sort_field = options.sort_by
-            if sort_field == "id" and self._app_id_field != "id":
-                sort_field = self._app_id_field
-            elif sort_field == "db_id" and self._db_id_field != "db_id":
-                sort_field = self._db_id_field
-            direction = "DESC" if options.sort_desc else "ASC"
-            query += f" ORDER BY {quote_identifier(sort_field)} {direction}"
-        else:
-            query += f" ORDER BY {quote_identifier(self._app_id_field)} ASC"
-        query += f" LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
-        params.append(options.limit)
-        params.append(options.offset)
-        return query, params
+        try:
+            param_idx = 1
+            query_parts = self._translate_query_options(effective_options, False)
+            where_clause, where_params, param_idx = self._build_where_clause(
+                query_parts, param_idx
+            )
 
-    def _build_base_query(self, options: QueryOptions) -> Tuple[str, List[Any]]:
-        return "", []
+            sql = f"SELECT COUNT(*) FROM {self._qualified_table_name} {where_clause}"
+            all_params = where_params
 
-    def _transform_expression(
-        self, expr: Dict[str, Any], start_index: int = 1
-    ) -> Tuple[str, List[Any], int]:
-        clauses = []
-        params = []
-        current_index = start_index
-        if "and" in expr:
-            sub_clauses = []
-            for sub_expr in expr["and"]:
-                clause, sub_params, current_index = self._transform_expression(
-                    sub_expr, current_index
+            logger.debug(f"Executing count query: SQL='{sql}', Params={all_params}")
+            async with self._get_session() as conn:
+                count_val = await conn.fetchval(
+                    sql, *all_params, timeout=effective_options.timeout
                 )
-                sub_clauses.append(f"({clause})")
-                params.extend(sub_params)
-            return " AND ".join(sub_clauses), params, current_index
-        if "or" in expr:
-            sub_clauses = []
-            for sub_expr in expr["or"]:
-                clause, sub_params, current_index = self._transform_expression(
-                    sub_expr, current_index
-                )
-                sub_clauses.append(f"({clause})")
-                params.extend(sub_params)
-            return " OR ".join(sub_clauses), params, current_index
-        for field, condition in expr.items():
-            # Check if it's a nested field (contains dots)
-            if "." in field:
-                main_field, sub_field = field.split(".", 1)
-                safe_main_field = quote_identifier(main_field)
 
-                # Transform dot notation to PostgreSQL JSONB path format (with commas)
-                jsonb_path = sub_field.replace(".", ",")
+            logger.info(f"Counted {count_val} matching entities.")
+            return int(count_val or 0)
+        except Exception as e:
+            logger.error(f"Error counting entities: {e}", exc_info=True)
+            self._handle_db_error(e, "counting entities")
+            raise  # pragma: no cover
 
-                # Get the value to compare against
-                if isinstance(condition, dict):
-                    operator = condition.get("operator", "eq")
-                    value = condition.get("value")
-                else:
-                    operator = "eq"
-                    value = condition
+    # --- Helper Method Implementations ---
+    def _serialize_entity(self, entity: T) -> Dict[str, Any]:
+        """Convert entity to dict suitable for asyncpg storage."""
+        data = prepare_for_storage(entity)
+        if not isinstance(data, dict):
+            raise TypeError(
+                f"prepare_for_storage did not return dict for {entity}"
+            )
 
-                # Convert special types (like Pydantic URL)
-                value = prepare_for_storage(value)
+        serialized_data = {
+            k: v for k, v in data.items() if not k.startswith("_")
+        }
 
-                # Handle different operators for JSONB nested fields
-                if operator == "eq":
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' = ${current_index}"
-                    params.append(str(value))
-                    current_index += 1
-                elif operator == "ne":
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' != ${current_index}"
-                    params.append(str(value))
-                    current_index += 1
-                elif operator == "gt":
-                    clause = f"({safe_main_field}::jsonb #>> '{{{jsonb_path}}}')::numeric > ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator in ("ge", "gte"):
-                    clause = f"({safe_main_field}::jsonb #>> '{{{jsonb_path}}}')::numeric >= ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "lt":
-                    clause = f"({safe_main_field}::jsonb #>> '{{{jsonb_path}}}')::numeric < ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator in ("le", "lte"):
-                    clause = f"({safe_main_field}::jsonb #>> '{{{jsonb_path}}}')::numeric <= ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "in":
-                    if not value:
-                        clause = "FALSE"
-                    else:
-                        placeholders = [
-                            f"${current_index + i}" for i in range(len(value))
-                        ]
-                        clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' IN ({', '.join(placeholders)})"
-                        params.extend([str(v) for v in value])
-                        current_index += len(value)
-                elif operator == "nin":
-                    if not value:
-                        clause = "TRUE"
-                    else:
-                        placeholders = [
-                            f"${current_index + i}" for i in range(len(value))
-                        ]
-                        clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' NOT IN ({', '.join(placeholders)})"
-                        params.extend([str(v) for v in value])
-                        current_index += len(value)
-                elif operator == "contains":
-                    # For contains on nested JSONB arrays
-                    jsonb_parent_path = (
-                        jsonb_path.rsplit(",", 1)[0] if "," in jsonb_path else ""
-                    )
-                    if jsonb_parent_path:
-                        clause = f"{safe_main_field}::jsonb #> '{{{jsonb_parent_path}}}' @> ${current_index}::jsonb"
-                    else:
-                        clause = f"{safe_main_field}::jsonb @> ${current_index}::jsonb"
-                    params.append(json.dumps({jsonb_path.split(",")[-1]: value}))
-                    current_index += 1
-                elif operator == "startswith":
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' ILIKE ${current_index}"
-                    params.append(f"{value}%")
-                    current_index += 1
-                elif operator == "endswith":
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' ILIKE ${current_index}"
-                    params.append(f"%{value}")
-                    current_index += 1
-                elif operator == "like":
-                    if "%" not in value:
-                        pattern = f"%{value}%"
-                    else:
-                        pattern = value
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' ILIKE ${current_index}"
-                    params.append(pattern)
-                    current_index += 1
-                elif operator == "exists":
-                    if value:
-                        # Check if the JSON path exists
-                        clause = f"jsonb_path_exists({safe_main_field}::jsonb, '$.\"{jsonb_path.replace(',', '\".\\"')}\"')"
-                    else:
-                        # Check if the JSON path does not exist
-                        clause = f"NOT jsonb_path_exists({safe_main_field}::jsonb, '$.\"{jsonb_path.replace(',', '\".\\"')}\"')"
-                elif operator == "regex":
-                    clause = f"{safe_main_field}::jsonb #>> '{{{jsonb_path}}}' ~ ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                else:
-                    raise ValueError(f"Unsupported operator: {operator}")
+        app_id_value = data.get(self.app_id_field)
+        if app_id_value is not None:
+            serialized_data[self.db_id_field] = app_id_value
+        else:
+            # Try getattr as fallback before raising error
+            db_id_value_fallback = getattr(entity, self.app_id_field, None)
+            if db_id_value_fallback is not None:
+                serialized_data[self.db_id_field] = db_id_value_fallback
             else:
-                # Non-nested field handling (existing code)
-                entity_value = condition
-                if isinstance(condition, dict):
-                    operator = condition.get("operator", "eq")
-                    value = condition.get("value")
-                else:
-                    operator = "eq"
-                    value = condition
-                safe_field = quote_identifier(field)
-                if operator == "eq":
-                    clause = f"{safe_field} = ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "ne":
-                    clause = f"{safe_field} != ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "gt":
-                    clause = f"{safe_field} > ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator in ("ge", "gte"):
-                    clause = f"{safe_field} >= ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "lt":
-                    clause = f"{safe_field} < ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator in ("le", "lte"):
-                    clause = f"{safe_field} <= ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "in":
-                    if not value:
-                        clause = "FALSE"
-                    else:
-                        placeholders = [
-                            f"${current_index + i}" for i in range(len(value))
-                        ]
-                        clause = f"{safe_field} IN ({', '.join(placeholders)})"
-                        params.extend(value)
-                        current_index += len(value)
-                elif operator == "nin":
-                    placeholders = [f"${current_index + i}" for i in range(len(value))]
-                    clause = f"{safe_field} NOT IN ({', '.join(placeholders)})"
-                    params.extend(value)
-                    current_index += len(value)
-                elif operator == "contains":
-                    clause = f"${current_index} = ANY({safe_field})"
-                    params.append(value)
-                    current_index += 1
-                elif operator == "startswith":
-                    clause = f"{safe_field} ILIKE ${current_index}"
-                    params.append(f"{value}%")
-                    current_index += 1
-                elif operator == "endswith":
-                    clause = f"{safe_field} ILIKE ${current_index}"
-                    params.append(f"%{value}")
-                    current_index += 1
-                elif operator == "like":
-                    if "%" not in value:
-                        pattern = f"%{value}%"
-                    else:
-                        pattern = value
-                    clause = f"{safe_field} ILIKE ${current_index}"
-                    params.append(pattern)
-                    current_index += 1
-                elif operator == "exists":
-                    clause = f"{safe_field} IS {'NOT ' if value else ''}NULL"
-                elif operator == "regex":
-                    clause = f"{safe_field} ~ ${current_index}"
-                    params.append(value)
-                    current_index += 1
-                else:
-                    raise ValueError(f"Unsupported operator: {operator}")
-            clauses.append(clause)
-        return " AND ".join(clauses), params, current_index
+                raise ValueError(
+                    f"Cannot determine PK value for '{self.db_id_field}'."
+                )
 
-    def _build_set_clause(
-        self, update_payload: Dict[str, Any], start_index: int
-    ) -> Tuple[str, List[Any]]:
-        """
-        Build the SET clause for SQL UPDATE from the MongoDB-style update payload.
-        """
-        set_parts = []
-        params = []
-        current_index = start_index
+        # Remove app_id_field if it's different and not a real column
+        if self.app_id_field != self.db_id_field:
+            try:
+                hints = get_type_hints(self.entity_type)
+                if self.app_id_field not in hints:
+                    serialized_data.pop(self.app_id_field, None)
+            except Exception:
+                pass  # Ignore errors getting hints
 
-        # Handle $set operation (direct field updates)
-        if "$set" in update_payload:
-            for field, value in update_payload["$set"].items():
-                if "." in field:
-                    # Extract main field and JSON path
-                    main_field, sub_field = field.split(".", 1)
-                    safe_main_field = quote_identifier(main_field)
+        return serialized_data
 
-                    # Apply prepare_for_storage to convert special types
-                    value = prepare_for_storage(value)
+    def _deserialize_record(self, record_data: asyncpg.Record) -> T:
+        """Convert asyncpg.Record (dict-like) into an entity object T."""
+        if record_data is None:
+            raise ValueError("Cannot deserialize None record data.")
 
-                    # Serialize the value to JSON
-                    json_value = json.dumps(value)
+        entity_dict = dict(record_data)
+        processed_dict = entity_dict
 
-                    # Handle multi-level paths by splitting properly
-                    path_parts = sub_field.split(".")
-                    array_path = ", ".join([f"'{part}'" for part in path_parts])
+        db_id_value = entity_dict.get(self.db_id_field) # e.g., value from "_id"
 
-                    set_parts.append(
-                        f"""
-                        {safe_main_field} = jsonb_set(
-                            COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
-                            ARRAY[{array_path}],
-                            ${current_index}::jsonb,
-                            true
-                        )
-                    """
-                    )
-                    params.append(json_value)
-                    current_index += 1
-                else:
-                    safe_field = quote_identifier(field)
-                    # Convert the value if it's a dictionary
-                    if isinstance(value, dict):
-                        value = prepare_for_storage(value)
-                        value = json.dumps(value)
-                    else:
-                        value = prepare_for_storage(value)
-                    set_parts.append(f"{safe_field} = ${current_index}")
-                    params.append(value)
-                    current_index += 1
+        if db_id_value is not None:
+            # If app_id field exists in the record (meaning it's a distinct column)
+            # use its value for the entity's app_id attribute. Otherwise, map
+            # the db_id value back to the entity's app_id attribute.
+            if self.app_id_field in entity_dict:
+                 processed_dict[self.app_id_field] = str(entity_dict[self.app_id_field])
+            else:
+                 processed_dict[self.app_id_field] = str(db_id_value)
 
-        # Handle $unset operation (set fields to appropriate default values)
-        if "$unset" in update_payload:
-            for field in update_payload["$unset"]:
-                if "." in field:
-                    # Extract main field and JSON path for nested fields
-                    main_field, sub_field = field.split(".", 1)
-                    safe_main_field = quote_identifier(main_field)
-
-                    # Handle multi-level paths by converting dots to PostgreSQL JSON path format
-                    path_parts = sub_field.split(".")
-                    array_path = ", ".join([f"'{part}'" for part in path_parts])
-
-                    # Use jsonb_set with the #- operator to remove the specified path
-                    set_parts.append(
-                        f"""
-                        {safe_main_field} = ({safe_main_field}::jsonb #- ARRAY[{array_path}])
-                    """
-                    )
-                else:
-                    safe_field = quote_identifier(field)
-                    # Generic field type handling based on name patterns
-                    if field.endswith("_at") or field in ("created_at", "updated_at"):
-                        set_parts.append(f"{safe_field} = CURRENT_TIMESTAMP")
-                    elif (
-                        field in ("tags",)
-                        or field.endswith("_tags")
-                        or field.endswith("_list")
-                        or field.endswith("_array")
-                    ):
-                        set_parts.append(f"{safe_field} = '{{}}'::jsonb")
-                    elif (
-                        field in ("metadata", "profile")
-                        or field.endswith("_data")
-                        or field.endswith("_info")
-                    ):
-                        set_parts.append(f"{safe_field} = '{{}}'::jsonb")
-                    elif (
-                        field in ("active",)
-                        or field.startswith("is_")
-                        or field.endswith("_active")
-                    ):
-                        set_parts.append(f"{safe_field} = false")
-                    elif (
-                        field.endswith("_count")
-                        or field == "value"
-                        or field.endswith("_value")
-                    ):
-                        set_parts.append(f"{safe_field} = 0")
-                    else:
-                        set_parts.append(f"{safe_field} = ''")
-
-        # Handle array operations: $push, $pull, $pop
-        if "$push" in update_payload:
-            for field, value in update_payload["$push"].items():
-                # Apply prepare_for_storage to handle special types
-                value = prepare_for_storage(value)
-
-                # Serialize the value if it's a dictionary or list
-                if isinstance(value, (dict, list)):
-                    json_value = json.dumps(value)
-                else:
-                    json_value = json.dumps(value)
-
-                if "." in field:
-                    # Handle nested array pushes
-                    main_field, sub_field = field.split(".", 1)
-                    safe_main_field = quote_identifier(main_field)
-
-                    # Handle multi-level paths
-                    path_parts = sub_field.split(".")
-                    array_path = ", ".join([f"'{part}'" for part in path_parts])
-
-                    set_parts.append(
-                        f"""
-                        {safe_main_field} = jsonb_set(
-                            COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
-                            ARRAY[{array_path}],
-                            CASE
-                                WHEN jsonb_typeof(
-                                    jsonb_extract_path_text(
-                                        {safe_main_field}::jsonb, 
-                                        {", ".join([f"'{p}'" for p in path_parts])}
-                                    )::jsonb
-                                ) = 'array'
-                                THEN (
-                                    jsonb_extract_path_text(
-                                        {safe_main_field}::jsonb, 
-                                        {", ".join([f"'{p}'" for p in path_parts])}
-                                    )::jsonb || ${current_index}::jsonb
-                                )
-                                ELSE jsonb_build_array(${current_index}::jsonb)
-                            END,
-                            true
-                        )
-                    """
-                    )
-                    params.append(json_value)
-                    current_index += 1
-                else:
-                    safe_field = quote_identifier(field)
-                    set_parts.append(
-                        f"{safe_field} = CASE WHEN {safe_field} IS NULL THEN ARRAY[${current_index}] ELSE array_append({safe_field}, ${current_index}) END"
-                    )
-                    params.append(value)
-                    current_index += 1
-
-        if "$pull" in update_payload:
-            for field, value in update_payload["$pull"].items():
-                # Apply prepare_for_storage to handle special types
-                value = prepare_for_storage(value)
-
-                # Serialize the value if it's a dictionary or list
-                if isinstance(value, (dict, list)):
-                    json_value = json.dumps(value)
-                else:
-                    json_value = json.dumps(value)
-
-                if "." in field:
-                    # Handle nested array pulls
-                    main_field, sub_field = field.split(".", 1)
-                    safe_main_field = quote_identifier(main_field)
-
-                    # Handle multi-level paths
-                    path_parts = sub_field.split(".")
-                    array_path = ", ".join([f"'{part}'" for part in path_parts])
-
-                    set_parts.append(
-                        f"""
-                        {safe_main_field} = jsonb_set(
-                            COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
-                            ARRAY[{array_path}],
-                            (
-                                SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-                                FROM jsonb_array_elements(
-                                    COALESCE(
-                                        jsonb_extract_path(
-                                            {safe_main_field}::jsonb, 
-                                            {", ".join([f"'{p}'" for p in path_parts])}
-                                        ), 
-                                        '[]'::jsonb
-                                    )
-                                ) AS elem
-                                WHERE elem::text != ${current_index}::text
-                            ),
-                            true
-                        )
-                    """
-                    )
-                    params.append(json_value)
-                    current_index += 1
-                else:
-                    safe_field = quote_identifier(field)
-                    set_parts.append(
-                        f"{safe_field} = array_remove({safe_field}, ${current_index})"
-                    )
-                    params.append(value)
-                    current_index += 1
-
-        if "$pop" in update_payload:
-            for field, direction in update_payload["$pop"].items():
-                if "." in field:
-                    # Handle nested array pops
-                    main_field, sub_field = field.split(".", 1)
-                    safe_main_field = quote_identifier(main_field)
-
-                    # Handle multi-level paths
-                    path_parts = sub_field.split(".")
-                    array_path = ", ".join([f"'{part}'" for part in path_parts])
-
-                    if direction == 1:  # Pop last element
-                        set_parts.append(
-                            f"""
-                            {safe_main_field} = jsonb_set(
-                                COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
-                                ARRAY[{array_path}],
-                                (
-                                    SELECT CASE
-                                        WHEN jsonb_array_length(
-                                            COALESCE(
-                                                jsonb_extract_path(
-                                                    {safe_main_field}::jsonb, 
-                                                    {", ".join([f"'{p}'" for p in path_parts])}
-                                                ), 
-                                                '[]'::jsonb
-                                            )
-                                        ) > 0
-                                        THEN (
-                                            SELECT jsonb_agg(value)
-                                            FROM jsonb_array_elements(
-                                                COALESCE(
-                                                    jsonb_extract_path(
-                                                        {safe_main_field}::jsonb, 
-                                                        {", ".join([f"'{p}'" for p in path_parts])}
-                                                    ), 
-                                                    '[]'::jsonb
-                                                )
-                                            ) WITH ORDINALITY
-                                            WHERE ordinality < jsonb_array_length(
-                                                COALESCE(
-                                                    jsonb_extract_path(
-                                                        {safe_main_field}::jsonb, 
-                                                        {", ".join([f"'{p}'" for p in path_parts])}
-                                                    ), 
-                                                    '[]'::jsonb
-                                                )
-                                            )
-                                        )
-                                        ELSE '[]'::jsonb
-                                    END
-                                ),
-                                true
-                            )
-                        """
-                        )
-                    elif direction == -1:  # Pop first element
-                        set_parts.append(
-                            f"""
-                            {safe_main_field} = jsonb_set(
-                                COALESCE({safe_main_field}::jsonb, '{{}}'::jsonb),
-                                ARRAY[{array_path}],
-                                (
-                                    SELECT CASE
-                                        WHEN jsonb_array_length(
-                                            COALESCE(
-                                                jsonb_extract_path(
-                                                    {safe_main_field}::jsonb, 
-                                                    {", ".join([f"'{p}'" for p in path_parts])}
-                                                ), 
-                                                '[]'::jsonb
-                                            )
-                                        ) > 0
-                                        THEN (
-                                            SELECT jsonb_agg(value)
-                                            FROM jsonb_array_elements(
-                                                COALESCE(
-                                                    jsonb_extract_path(
-                                                        {safe_main_field}::jsonb, 
-                                                        {", ".join([f"'{p}'" for p in path_parts])}
-                                                    ), 
-                                                    '[]'::jsonb
-                                                )
-                                            ) WITH ORDINALITY
-                                            WHERE ordinality > 1
-                                        )
-                                        ELSE '[]'::jsonb
-                                    END
-                                ),
-                                true
-                            )
-                        """
-                        )
-                else:
-                    safe_field = quote_identifier(field)
-                    if direction == 1:  # Pop last element
-                        set_parts.append(
-                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[1:array_length({safe_field}, 1)-1] ELSE {safe_field} END"
-                        )
-                    elif direction == -1:  # Pop first element
-                        set_parts.append(
-                            f"{safe_field} = CASE WHEN array_length({safe_field}, 1) > 0 THEN {safe_field}[2:array_length({safe_field}, 1)] ELSE {safe_field} END"
-                        )
-
-        if not set_parts:
-            raise ValueError("No valid update operations found in the Update object")
-
-        return ", ".join(set_parts), params
-
-    def _entity_to_dict(self, entity: T) -> Dict[str, Any]:
-        """
-        Convert an entity to a dictionary suitable for PostgreSQL storage.
-        """
-        # Get the entity as a dictionary
-        if hasattr(entity, "model_dump"):
-            entity_dict = entity.model_dump()
+            # Remove db_id_field if it's different and not an actual entity field
+            if self.db_id_field != self.app_id_field:
+                 try:
+                      hints = get_type_hints(self.entity_type)
+                      if self.db_id_field not in hints:
+                           processed_dict.pop(self.db_id_field, None)
+                 except Exception: pass # Ignore hint errors
         else:
-            entity_dict = dict(entity.__dict__)
+            self._logger.error(f"PK '{self.db_id_field}' is NULL in record.")
+            # Ensure app_id field is set to None if it exists in the model
+            try:
+                hints = get_type_hints(self.entity_type)
+                if self.app_id_field in hints:
+                    processed_dict[self.app_id_field] = None
+            except Exception: pass
 
-        # Handle ID fields
-        if self._app_id_field in entity_dict and self._db_id_field not in entity_dict:
-            entity_dict[self._db_id_field] = entity_dict[self._app_id_field]
-        elif self._db_id_field in entity_dict and self._app_id_field not in entity_dict:
-            entity_dict[self._app_id_field] = entity_dict[self._db_id_field]
+        try:
+            return self.entity_type(**processed_dict)
+        except Exception as e:
+            self._logger.error(
+                f"Failed to instantiate {self.entity_type.__name__} from DB "
+                f"data: {e}. Data: {processed_dict!r}",
+                exc_info=True,
+            )
+            raise ValueError(
+                f"Failed to create {self.entity_type.__name__} from record"
+            ) from e
 
-        # Convert special types to storage-compatible formats
-        entity_dict = prepare_for_storage(entity_dict)
+    def _build_where_clause(
+        self, query_parts: Dict[str, Any], start_index: int
+    ) -> Tuple[str, List[Any], int]:
+        """Build WHERE clause string and re-index $n parameters."""
+        where_clause = ""
+        where_params = []
+        current_index = start_index
+        original_where = query_parts.get("where")
 
-        # Handle fields based on their types, not based on field names
-        for key, value in list(entity_dict.items()):
-            # For dictionary fields, convert to JSON string
-            if isinstance(value, dict):
-                entity_dict[key] = json.dumps(value)
-            # For list fields, if they're homogeneous primitive types,
-            # keep them as lists for PostgreSQL arrays
-            elif isinstance(value, list):
-                if len(value) == 0 or (
-                    all(isinstance(item, (str, int, float, bool)) for item in value)
-                    and all(isinstance(item, type(value[0])) for item in value)
-                ):
-                    # Keep as a list for PostgreSQL array type
-                    pass
+        if original_where and original_where != "1=1":
+            original_params = query_parts.get("params", [])
+            param_count = original_where.count("$")
+            # Basic sanity check - $n placeholders should match param list length
+            # Note: Literal '$' could exist, but less likely in generated code
+            if param_count != len(original_params):
+                raise ValueError(
+                    f"WHERE clause parameter count mismatch: "
+                    f"{param_count} placeholders, {len(original_params)} params."
+                )
+
+            reindexed_where = original_where
+            # Replace $1, $2, ... sequentially with $start_index, ...
+            for i in range(param_count):
+                placeholder = r"\$" + str(i + 1) + r"(\b|$)"
+                replacement = f"${current_index + i}\\1"
+                reindexed_where = re.sub(
+                    placeholder, replacement, reindexed_where, count=1
+                )
+
+            where_clause = f"WHERE {reindexed_where}"
+            where_params = original_params
+            current_index += param_count
+
+        return where_clause, where_params, current_index
+
+        # src/async_repository/backends/postgres_repository.py
+
+
+    def _reindex_params(
+        self, clause_str: str, params: List[Any], start_index: int
+    ) -> Tuple[str, List[Any], int]:
+        """
+        Re-index $n parameters in a SQL clause string sequentially, assuming
+        input placeholders are $1, $2, ... corresponding to the params list.
+        """
+        if not clause_str or not params:
+            return clause_str, params, start_index
+
+        reindexed_clause = clause_str
+        num_params = len(params)
+
+        # Replace placeholders in reverse order to avoid partial replacements
+        # (e.g., replacing $1 in $10 before replacing $10)
+        for i in range(num_params - 1, -1, -1):
+            original_index = i + 1
+            new_index = start_index + i
+            # Use word boundary \b to ensure whole number match
+            placeholder_pattern = r"\$" + str(original_index) + r"\b"
+            replacement = f"${new_index}"
+            reindexed_clause = re.sub(
+                placeholder_pattern, replacement, reindexed_clause
+            )
+
+        next_index = start_index + num_params
+        return reindexed_clause, params, next_index
+
+  
+    def _translate_query_options(
+        self, options: QueryOptions, include_sorting_pagination: bool = False
+    ) -> Dict[str, Any]:
+        """Translate QueryOptions into PostgreSQL WHERE/ORDER BY parts."""
+        sql_parts: Dict[str, Any] = {"where": "1=1", "params": []}
+        current_param_index = 1  # Start fresh for each query translation
+
+        if options.expression:
+            try:
+                (
+                    where_clause,
+                    params,
+                    current_param_index,
+                ) = self._translate_expression_recursive(
+                    options.expression, current_param_index
+                )
+                if where_clause and where_clause != "1=1":
+                    sql_parts["where"] = where_clause
+                    sql_parts["params"] = params
+            except Exception as e:
+                self._logger.error(
+                    f"Failed to translate query expression: {options.expression!r}",
+                    exc_info=True,
+                )
+                raise
+
+        if include_sorting_pagination:
+            if options.random_order:
+                sql_parts["order"] = "RANDOM()"
+            elif options.sort_by:
+                direction = "DESC" if options.sort_desc else "ASC"
+                if "." in options.sort_by:
+                    base_col, *nested_parts = options.sort_by.split(".")
+                    path_str = "{" + ",".join(nested_parts) + "}"
+                    # Use #>> for sorting by text representation
+                    sql_parts["order"] = (
+                        f'("{base_col}"#>>\'{path_str}\') {direction}'
+                    )
                 else:
-                    # Convert to JSON for heterogeneous or complex lists
-                    entity_dict[key] = json.dumps(value)
+                    sql_parts["order"] = f'"{options.sort_by}" {direction}'
+            else:
+                sql_parts["order"] = None
 
-        return entity_dict
+            sql_parts["limit"] = (
+                options.limit
+                if (options.limit is not None and options.limit >= 0)
+                else -1
+            )
+            sql_parts["offset"] = (
+                options.offset
+                if (options.offset is not None and options.offset > 0)
+                else 0
+            )
 
-    def _row_to_entity(self, row: Record) -> T:
+        return sql_parts
+
+    def _translate_expression_recursive(
+        self, expression: QueryExpression, param_start_index: int
+    ) -> Tuple[str, List[Any], int]:
+        """Recursively translate QueryExpression nodes into PostgreSQL WHERE."""
+        current_params: List[Any] = []
+        current_index = param_start_index
+
+        if isinstance(expression, QueryFilter):
+            field = expression.field_path
+            op = expression.operator
+            val = expression.value
+
+            sql_op_map = {
+                QueryOperator.EQ: "=", QueryOperator.NE: "!=",
+                QueryOperator.GT: ">", QueryOperator.GTE: ">=",
+                QueryOperator.LT: "<", QueryOperator.LTE: "<=",
+                QueryOperator.IN: "IN", QueryOperator.NIN: "NOT IN",
+                QueryOperator.LIKE: "LIKE", QueryOperator.STARTSWITH: "LIKE",
+                QueryOperator.ENDSWITH: "LIKE", QueryOperator.CONTAINS: "@>",
+                QueryOperator.EXISTS: "?", # Placeholder, handled below
+            }
+            sql_op = sql_op_map.get(op)
+            placeholder = f"${current_index}"
+
+            is_jsonb_path = "." in field
+            quoted_field: str
+            path_list: Optional[List[str]] = None
+            quoted_base_column: Optional[str] = None
+
+            if is_jsonb_path:
+                base_column_name, *nested_parts = field.split(".")
+                quoted_base_column = f'"{base_column_name}"'
+                path_list = nested_parts
+                path_str = "{" + ",".join(path_list) + "}"
+                # Use #>> for text extraction/comparison by default
+                quoted_field = f"({quoted_base_column}#>>'{path_str}')"
+            else:
+                quoted_base_column = f'"{field}"'
+                quoted_field = quoted_base_column
+
+            # --- Operator specific logic ---
+            if op == QueryOperator.EXISTS:
+                if not is_jsonb_path:  # Top-level field existence
+                    exists_op = "IS NOT NULL" if val else "IS NULL"
+                    return f"{quoted_field} {exists_op}", [], current_index
+                else:
+                    # Use jsonb_path_exists for nested paths
+                    # Build path suitable for jsonpath: 'key."0".sub'
+                    jsonpath_suffix = ".".join(
+                        f'"{p}"' if not p.isdigit() else f"[{p}]"
+                        for p in (path_list or [])
+                    )
+                    # jsonpath param needs full path string
+                    path_param = f"$.{jsonpath_suffix}"
+                    current_params.append(path_param)
+                    idx = current_index
+                    current_index += 1
+                    sql = f"jsonb_path_exists({quoted_base_column}, ${idx})"
+                    if not val:
+                        sql = f"NOT {sql}"
+                    return sql, current_params, current_index
+
+            elif op == QueryOperator.CONTAINS:
+                param_val = json.dumps(prepare_for_storage(val))
+                current_params.append(param_val)
+                idx = current_index
+                current_index += 1
+                if path_list:
+                    path_str = "{" + ",".join(path_list) + "}"
+                    # Use #> to extract the object/array at path before @>
+                    sql = f"({quoted_base_column}#>'{path_str}') @> ${idx}::jsonb"
+                else:
+                    sql = f"{quoted_field} @> ${idx}::jsonb"
+                return sql, current_params, current_index
+
+            elif op in (QueryOperator.IN, QueryOperator.NIN):
+                if not isinstance(val, (list, tuple)):
+                    raise ValueError(f"Value for {op} must be a list/tuple.")
+                if not val:
+                    return ("FALSE", []) if op == QueryOperator.IN else ("TRUE", [])
+                placeholders = ", ".join(
+                    f"${current_index + i}" for i in range(len(val))
+                )
+                current_params.extend(val)
+                sql = f"{quoted_field} {sql_op} ({placeholders})"
+                current_index += len(val)
+                return sql, current_params, current_index
+
+            elif op == QueryOperator.STARTSWITH:
+                if not isinstance(val, str):
+                    raise ValueError("Value must be string.")
+                current_params.append(f"{val}%")
+                sql = f"{quoted_field} {sql_op} {placeholder}"
+                current_index += 1
+                return sql, current_params, current_index
+
+            elif op == QueryOperator.ENDSWITH:
+                if not isinstance(val, str):
+                    raise ValueError("Value must be string.")
+                current_params.append(f"%{val}")
+                sql = f"{quoted_field} {sql_op} {placeholder}"
+                current_index += 1
+                return sql, current_params, current_index
+
+            elif op == QueryOperator.LIKE:
+                if not isinstance(val, str):
+                    raise ValueError("Value must be string.")
+                current_params.append(val)
+                sql = f"{quoted_field} {sql_op} {placeholder}"
+                current_index += 1
+                return sql, current_params, current_index
+
+            else:  # EQ, NE, GT, GTE, LT, LTE
+                # Assume text comparison via #>>/->> for JSONB paths
+                current_params.append(val)
+                sql = f"{quoted_field} {sql_op} {placeholder}"
+                current_index += 1
+                return sql, current_params, current_index
+
+        elif isinstance(expression, QueryLogical):
+            if not expression.conditions:
+                return ("TRUE", [], param_start_index)
+
+            sql_fragments = []
+            all_params: List[Any] = []
+            current_idx_recursive = param_start_index
+
+            for cond in expression.conditions:
+                (
+                    fragment,
+                    params,
+                    current_idx_recursive,
+                ) = self._translate_expression_recursive(
+                    cond, current_idx_recursive
+                )
+                if fragment and fragment not in ("TRUE", "FALSE"):
+                    sql_fragments.append(f"({fragment})")
+                    all_params.extend(params)
+                elif fragment == "FALSE" and expression.operator.upper() == "AND":
+                    return ("FALSE", [], current_idx_recursive)
+                elif fragment == "TRUE" and expression.operator.upper() == "OR":
+                    return ("TRUE", [], current_idx_recursive)
+
+            if not sql_fragments:
+                return ("TRUE", [], current_idx_recursive)
+
+            logical_op_sql = f" {expression.operator.upper()} "
+            return logical_op_sql.join(sql_fragments), all_params, current_idx_recursive
+        else:
+            raise TypeError(f"Unknown QueryExpression type: {type(expression)}")
+
+    def _translate_update(self, update: Update) -> Dict[str, Any]:
+        """Translate Update object into PostgreSQL SET clause and params."""
+        set_clauses: List[str] = []
+        params: List[Any] = []
+        current_param_index = 1
+
+        operations = update.build()
+        if not operations:
+            return {"set": "", "params": []}
+
+        for op in operations:
+            field = op.field_path
+            is_nested = "." in field
+            base_column_name = field.split(".", 1)[0] if is_nested else field
+            quoted_base_column = f'"{base_column_name}"'
+
+            # Prepare path array literal for JSONB ops if nested
+            path_array_sql: Optional[str] = None
+            if is_nested:
+                path_parts = field.split(".")[1:]
+                # Ensure parts are quoted correctly for ARRAY literal
+                quoted_parts = [f"'{p}'" for p in path_parts]
+                path_array_sql = f"ARRAY[{','.join(quoted_parts)}]"
+
+            idx = current_param_index # Capture current index for this op
+
+            if isinstance(op, SetOperation):
+                params.append(op.value)
+                current_param_index += 1
+                if is_nested and path_array_sql:
+                    # Use jsonb_set. Handle base NULL. Cast value param.
+                    set_clauses.append(
+                        f'{quoted_base_column} = jsonb_set('
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
+                        f"{path_array_sql}, "
+                        f"${idx}::jsonb, "
+                        f"true)"  # create_missing = true
+                    )
+                else:
+                    set_clauses.append(f"{quoted_base_column} = ${idx}")
+
+            elif isinstance(op, UnsetOperation):
+                if is_nested and path_array_sql:
+                    # Use #- operator. Handle base NULL.
+                    set_clauses.append(
+                        f"{quoted_base_column} = "
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb) #- "
+                        f"{path_array_sql}"
+                    )
+                    # No parameter needed for #- with literal path array
+                else:
+                    set_clauses.append(f"{quoted_base_column} = NULL")
+
+            elif isinstance(op, (IncrementOperation, MultiplyOperation)):
+                if is_nested: raise NotImplementedError("Nested numeric ops.")
+                op_sql = "+" if isinstance(op, IncrementOperation) else "*"
+                val = op.amount if isinstance(op, IncrementOperation) else op.factor
+                params.append(val)
+                current_param_index += 1
+                set_clauses.append(
+                    f"{quoted_base_column} = "
+                    f"COALESCE({quoted_base_column}, 0) {op_sql} ${idx}"
+                )
+
+            elif isinstance(op, (MinOperation, MaxOperation)):
+                if is_nested: raise NotImplementedError("Nested min/max ops.")
+                func_sql = "LEAST" if isinstance(op, MinOperation) else "GREATEST"
+                params.append(op.value)
+                current_param_index += 1
+                # Use COALESCE with the value itself for correct comparison if NULL
+                set_clauses.append(
+                    f"{quoted_base_column} = {func_sql}("
+                    f"COALESCE({quoted_base_column}, ${idx}), ${idx})"
+                )
+
+            elif isinstance(op, PushOperation):
+                if not op.items:
+                    continue
+
+                # Build the concatenation part first (::jsonb for each item)
+                concat_parts = []
+                for item in op.items:
+                    params.append(item)  # Add item to params
+                    item_idx = current_param_index
+                    current_param_index += 1
+                    concat_parts.append(f"${item_idx}::jsonb")  # Cast each item
+                concat_clause = " || ".join(concat_parts)
+
+                if is_nested:
+                    # --- Nested Push ---
+                    path_parts = field.split('.')[1:]
+                    # Path for jsonb_set (e.g., ARRAY['key', '0'])
+                    path_array_sql = "ARRAY[" + ",".join(
+                        f"'{p}'" for p in path_parts
+                    ) + "]"
+                    # Path for jsonb_path_query (e.g., '$.key[0]')
+                    # Build the path string carefully for jsonpath literal
+                    jsonpath_suffix = '.'.join(
+                        f'"{p}"' if not p.isdigit() else f'[{p}]'
+                        for p in path_parts
+                    )
+                    # jsonpath expression needs to be a valid SQL string literal
+                    # including the cast ::jsonpath
+                    jsonpath_sql_literal = f"('$.{jsonpath_suffix}')::jsonpath"
+
+                    # Get the existing array at the path, default to '[]'
+                    existing_array_expr = (
+                        f"COALESCE(jsonb_path_query_array("
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
+                        f"{jsonpath_sql_literal}"  # Use the literal here
+                        f"), '[]'::jsonb)"
+                    )
+
+                    # Use jsonb_set to place the concatenated array back
+                    set_clauses.append(
+                        f'{quoted_base_column} = jsonb_set('
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
+                        f"{path_array_sql}, "  # Path for jsonb_set
+                        f"({existing_array_expr} || {concat_clause}), "  # Value
+                        f"true)"  # create_missing = true
+                    )
+                else:
+                    # --- Top-Level Push ---
+                    set_clauses.append(
+                        f"{quoted_base_column} = "
+                        f"COALESCE({quoted_base_column}, '[]'::jsonb) || "
+                        f"{concat_clause}"
+                    )
+
+
+            elif isinstance(op, PopOperation):
+                index_str = "-1" if op.position == 1 else "0" # PG #- path index
+                if is_nested:
+                    path_parts = field.split(".")[1:] + [index_str]
+                    quoted_parts = [f"'{p}'" for p in path_parts]
+                    pop_path_array = f"ARRAY[{','.join(quoted_parts)}]"
+                    # Handle base NULL
+                    set_clauses.append(
+                        f"{quoted_base_column} = "
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb) #- {pop_path_array}"
+                    )
+                else: # Top level
+                    pop_path_array = f"ARRAY['{index_str}']"
+                     # Handle base NULL, ensure it's treated as array if NULL
+                    set_clauses.append(
+                        f"{quoted_base_column} = "
+                        f"COALESCE({quoted_base_column}, '[]'::jsonb) #- {pop_path_array}"
+                    )
+                # No parameters needed for #-
+
+            elif isinstance(op, PullOperation):
+                # ... (common setup: prepare value_to_pull, param_value, where_clause_subquery) ...
+                if isinstance(op.value_or_condition, dict):
+                    raise NotImplementedError("Dict criteria not supported.")
+                value_to_pull = op.value_or_condition
+                # ... (param_value preparation) ...
+                params.append(value_to_pull)
+                val_idx = current_param_index
+                current_param_index += 1
+                where_clause_subquery = f"elem #>> '{{}}' != ${val_idx}::text"
+                if value_to_pull is None:
+                    where_clause_subquery = "elem IS NOT NULL"
+
+                if is_nested:
+                    # --- Nested Pull Logic (using jsonb_set) ---
+                    path_parts = field.split('.')[1:]
+                    path_array_sql = "ARRAY[" + ",".join(
+                        f"'{p}'" for p in path_parts) + "]"
+                    jsonpath_suffix = '.'.join(
+                        f'"{p}"' if not p.isdigit() else f'[{p}]' for p in path_parts)
+                    jsonpath_expr = f"('$.{jsonpath_suffix}')::jsonpath"
+
+                    filtered_array_subquery = f"""
+                                ( SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                                  FROM jsonb_array_elements(
+                                      COALESCE(jsonb_path_query_first( -- Use path_query_first for safety
+                                          COALESCE({quoted_base_column}, '{{}}'::jsonb),
+                                          {jsonpath_expr}
+                                      ), '[]'::jsonb)
+                                  ) AS elem
+                                  WHERE {where_clause_subquery}
+                                )
+                                """
+                    # Correct: Use jsonb_set for nested paths
+                    set_clauses.append(
+                        f'{quoted_base_column} = jsonb_set('
+                        f"COALESCE({quoted_base_column}, '{{}}'::jsonb), "
+                        f"{path_array_sql}, "
+                        f"{filtered_array_subquery}, "
+                        f"false)"  # create_missing = false
+                    )
+                else:
+                    # --- Top-Level Pull Logic (Direct Assignment) ---
+                    quoted_field = quoted_base_column  # e.g., "tags"
+                    jsonpath_expr = "'$'::jsonpath"  # Path for jsonb_path_query_first
+
+                    # Subquery to rebuild array without the pulled value
+                    filtered_array_subquery = f"""
+                                ( SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                                  FROM jsonb_array_elements(
+                                       -- Get the top-level array, default to [] if null/not found
+                                       COALESCE(jsonb_path_query_first(
+                                           COALESCE({quoted_field}, '{{}}'::jsonb),
+                                           {jsonpath_expr}
+                                       ), '[]'::jsonb)
+                                  ) AS elem
+                                  WHERE {where_clause_subquery}
+                                )
+                                """
+                    # <<< Correct: Directly assign the subquery result >>>
+                    set_clauses.append(
+                        f"{quoted_field} = {filtered_array_subquery}"
+                    )
+
+
+            else:
+                raise TypeError(f"Unsupported UpdateOperation: {type(op)}")
+
+        set_clause_str = ", ".join(set_clauses)
+        return {"set": set_clause_str, "params": params}
+
+
+# src/async_repository/backends/postgres_repository.py (within PostgresRepository class)
+
+    def _handle_db_error(self, error: Exception, context: str = "") -> None:
         """
-        Convert a database row to an entity instance.
+        Map specific database errors or internal errors to appropriate exceptions.
+
+        Args:
+            error: The exception caught.
+            context: A string describing the operation context where the error occurred.
+
+        Raises:
+            ValueError: For constraint violations, data format errors,
+                        or unsupported operations/values.
+            KeyAlreadyExistsException: For primary key unique violations.
+            ObjectNotFoundException: If specifically raised and caught.
+            NotImplementedError: For features not implemented in this backend.
+            RuntimeError: For unexpected database issues or other errors.
         """
-        row_dict = dict(row)
+        log_message = f"Error during {context}: {error}"
 
-        # Handle ID fields
-        if self._db_id_field in row_dict:
-            if row_dict.get(self._app_id_field) is None:
-                row_dict[self._app_id_field] = row_dict[self._db_id_field]
-            if self._app_id_field != self._db_id_field:
-                del row_dict[self._db_id_field]
+        # --- Handle asyncpg specific errors ---
+        if isinstance(error, asyncpg.PostgresError):
+            # Log database errors with traceback for debugging
+            self._logger.error(log_message, exc_info=True)
 
-        # Parse any JSON strings to dictionaries/lists
-        for key, value in row_dict.items():
-            if isinstance(value, str):
-                try:
-                    parsed_value = json.loads(value)
-                    if isinstance(parsed_value, (dict, list)):
-                        row_dict[key] = parsed_value
-                except (json.JSONDecodeError, ValueError):
-                    pass
+            # UniqueViolationError -> KeyAlreadyExistsException or ValueError
+            if isinstance(error, asyncpg.UniqueViolationError):
+                # Check if it's the primary key constraint (common naming convention)
+                if self.db_id_field in str(error.detail or "") or (
+                    e.constraint_name and f"{self._table_name}_pkey" in e.constraint_name
+                ):
+                    # Extract app_id if possible from context for better message
+                    app_id_match = re.search(r"app_id\s+([^\s\)]+)", context)
+                    app_id_ctx = f" (app_id: {app_id_match.group(1)})" if app_id_match else ""
+                    raise KeyAlreadyExistsException(
+                        f"Entity with PK derived from App ID already exists{app_id_ctx}. "
+                        f"Detail: {error}"
+                    ) from error
+                else:
+                    # Another unique constraint violation
+                    raise ValueError(
+                        f"Unique constraint '{error.constraint_name}' violated during "
+                        f"{context}. Detail: {error}"
+                    ) from error
 
-        return self._entity_cls(**row_dict)
+            # NotNullViolationError -> ValueError
+            elif isinstance(error, asyncpg.NotNullViolationError):
+                raise ValueError(
+                    f"NOT NULL constraint violated for column "
+                    f"'{error.column_name}' during {context}. Detail: {error}"
+                ) from error
+
+            # ForeignKeyViolationError -> ValueError
+            elif isinstance(error, asyncpg.ForeignKeyViolationError):
+                raise ValueError(
+                    f"Foreign key constraint '{error.constraint_name}' "
+                    f"violated during {context}. Detail: {error}"
+                ) from error
+
+            # CheckViolationError -> ValueError
+            elif isinstance(error, asyncpg.CheckViolationError):
+                raise ValueError(
+                    f"Check constraint '{error.constraint_name}' violated "
+                    f"during {context}. Detail: {error}"
+                ) from error
+
+            # Authorization / Privilege Errors -> RuntimeError
+            elif isinstance(
+                error,
+                (
+                    asyncpg.InsufficientPrivilegeError,
+                    asyncpg.InvalidAuthorizationSpecificationError,
+                ),
+            ):
+                raise RuntimeError(
+                    f"DB authorization/privilege error during {context}. "
+                    f"Detail: {error}"
+                ) from error
+
+            # Data errors (invalid format, syntax in data) -> ValueError
+            elif isinstance(error, asyncpg.DataError):
+                 # Catch common data format issues
+                 if ('invalid input syntax' in str(error)
+                     or 'invalid jsonb input' in str(error)
+                     or 'invalid uuid' in str(error) # Example if using UUIDs
+                     or 'invalid datetime format' in str(error)):
+                    raise ValueError(
+                        f"Invalid data format encountered during {context}. "
+                        f"Detail: {error}"
+                    ) from error
+                 else: # Other data errors
+                    raise RuntimeError(
+                        f"Database data error during {context}: {error}"
+                    ) from error
+
+
+            # Schema Mismatch Errors -> RuntimeError
+            elif isinstance(
+                error,
+                (
+                    asyncpg.UndefinedTableError,
+                    asyncpg.UndefinedColumnError,
+                    asyncpg.UndefinedFunctionError,
+                ),
+            ):
+                raise RuntimeError(
+                    f"DB schema mismatch or missing function during "
+                    f"{context}. Detail: {error}"
+                ) from error
+
+            # Syntax errors likely indicate a bug in query generation
+            elif isinstance(error, asyncpg.PostgresSyntaxError):
+                 self._logger.error(
+                     "PostgresSyntaxError indicates a likely bug in SQL generation.",
+                     exc_info=True
+                 )
+                 raise RuntimeError(
+                    f"Invalid SQL syntax generated during {context}. "
+                    f"Detail: {error}"
+                 ) from error
+
+
+            # Catch-all for other specific Postgres errors -> RuntimeError
+            else:
+                raise RuntimeError(
+                    f"A specific database error occurred during {context}: {error}"
+                ) from error
+
+        # --- Handle specific non-DB errors from repository/framework logic ---
+        elif isinstance(
+            error,
+            (
+                ValueError,  # Includes unsupported ops, bad values, translation errors
+                TypeError,  # Bad types passed to operations
+                NotImplementedError, # Features not implemented
+                InvalidPathError, # From ModelValidator
+                KeyAlreadyExistsException, # Re-raise if passed through
+                ObjectNotFoundException, # Re-raise if passed through
+            )
+        ):
+            # Log potentially expected errors without traceback
+            self._logger.error(log_message)
+            raise error # Re-raise the original specific exception
+
+        # --- Handle truly unexpected errors ---
+        else:
+            # Log with traceback as it's not a recognized DB or framework error
+            self._logger.error(log_message, exc_info=True)
+            raise RuntimeError(
+                f"An unexpected error occurred during {context}"
+            ) from error
+

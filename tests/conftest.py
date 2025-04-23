@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+
+
 # Import necessary drivers
 import asyncpg
 import pytest
@@ -18,6 +20,8 @@ import pytest_asyncio
 import aiosqlite
 import motor.motor_asyncio
 from pymongo.errors import ConnectionFailure
+
+from async_repository.db_implementations.postgresql_repository import PostgresRepository
 
 # Only import winreg on Windows
 if platform.system() == "Windows":
@@ -38,7 +42,7 @@ TEST_MONGO_DB_NAME = "pytest_async_repo_db"
 MONGO_URI = os.getenv("TEST_MONGO_URI", "mongodb://localhost:27017")
 
 # --- List of available implementation keys ---
-REPOSITORY_IMPLEMENTATIONS = ["mongodb", "sqlite"]
+REPOSITORY_IMPLEMENTATIONS = ["mongodb", "sqlite", "postgresql"]
 
 
 # --- Availability Checks ---
@@ -75,8 +79,8 @@ if is_mongodb_available():
     AVAILABLE_IMPLEMENTATIONS.append("mongodb")
 if True:  # Assume SQLite (in-memory) is always available
     AVAILABLE_IMPLEMENTATIONS.append("sqlite")
-# if is_postgres_available():
-#     AVAILABLE_IMPLEMENTATIONS.append("postgresql")
+if is_postgres_available():
+    AVAILABLE_IMPLEMENTATIONS.append("postgresql")
 
 
 # --- Fixtures ---
@@ -84,10 +88,20 @@ if True:  # Assume SQLite (in-memory) is always available
 # Event Loop (Function Scoped - Default for pytest-asyncio tests)
 
 
-# PostgreSQL Fixture (Placeholder)
-@pytest_asyncio.fixture(scope="session")
-async def mock_postgres_pool():
-    yield None  # Keep placeholder until implemented
+
+@pytest_asyncio.fixture
+async def mock_postgres_pool(postgresql_proc):
+    """
+    Creates a PostgreSQL connection pool using asyncpg.create_pool with the provided postgresql_proc fixture.
+    """
+    # Connection details
+    conn_str = f"postgresql://postgres:postgres@{postgresql_proc.host}:{postgresql_proc.port}/postgres"
+
+    # Create connection pool
+    pool = await asyncpg.create_pool(conn_str)
+
+    yield pool
+    await pool.close()
 
 
 # MongoDB Client Fixture (Function Scoped)
@@ -195,21 +209,37 @@ def sqlite_repository_factory(sqlite_memory_db_conn):
     return _create
 
 
-@pytest.fixture(scope="function")
-def postgresql_repository_factory(mock_postgres_pool):
+
+@pytest_asyncio.fixture
+async def postgresql_repository_factory(mock_postgres_pool, logger):
     """Factory for creating PostgreSQL repositories."""
-    if not mock_postgres_pool:
-        pytest.skip("PostgreSQL pool not available.")
 
-    def _create(entity_cls, app_id_field="id", db_id_field=None):
-        table_name = f"{entity_cls.__name__.lower()}s_pytest"
-        effective_db_id_field = db_id_field or app_id_field
-        raise NotImplementedError("PostgreSQLRepository factory not fully implemented")
-        # return PostgreSQLRepository(...)
+    # Create a clean slate and set up tables
 
-    return _create
+    def create_repo(entity_type, app_id_field="id", db_id_field="_id"):
+
+        table_names = {
+            "Entity": "entities",
+        }
+
+        table_name = (
+                table_names.get(entity_type.__name__) or f"{entity_type.__name__.lower()}s"
+        )
+
+        print(
+            f"Creating a postgres repo for class: {entity_type} (entity class: {Entity}). Table name: {table_name}"
+        )
+
+        return PostgresRepository(
+            db_pool=mock_postgres_pool,
+            table_name=table_name,
+            entity_type=entity_type,
+            db_id_field=db_id_field,
+            app_id_field=app_id_field,
+        )
 
 
+    return create_repo
 # --- Parametrized Factory and Initialized Repo ---
 
 
