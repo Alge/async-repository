@@ -1,5 +1,5 @@
 import pytest
-from async_repository.postgresql.base import PostgreSQLRepository
+from async_repository.db_implementations.postgresql_repository import PostgreSQLRepository
 from tests.conftest import Entity
 
 from tests.conftest import REPOSITORY_IMPLEMENTATIONS

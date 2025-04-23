@@ -1,8 +1,8 @@
 # src/async_repository/base/query.py
-
+import copy
 import logging
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from inspect import isclass
 from types import SimpleNamespace
@@ -144,6 +144,11 @@ class QueryOptions:
         if self.timeout is not None:
             parts.append(f"timeout={self.timeout!r}")
         return f"QueryOptions({', '.join(parts)})"
+
+    def copy(self) -> "QueryOptions":
+        """Creates a shallow copy of the QueryOptions."""
+        # Use asdict for simple shallow copy of dataclass fields
+        return copy.copy(self)
 
 
 # --- Internal Expression Classes (Used by Builder API) ---
