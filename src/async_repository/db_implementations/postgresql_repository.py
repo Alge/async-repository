@@ -123,7 +123,6 @@ class PostgresRepository(Repository[T], Generic[T]):
     # --- Initialization ---
     def __init__(
         self,
-        # <<< Updated Type Hint and Parameter Name >>>
         db_pool: DB_POOL_TYPE,
         table_name: str,
         entity_type: Type[T],

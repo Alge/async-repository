@@ -4,49 +4,161 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "async-repository"
-version = "0.1.0"
-description = "An async-first, interface-driven repository abstraction layer for Python apps"
-readme = "README.md"
-requires-python = ">=3.8"
+version = "0.1.0" # Update version as needed
+description = "An async-first, interface-driven repository abstraction layer for Python apps."
+readme = "README.md" # Ensure you have a README.md
+requires-python = ">=3.8" # Based on typing usage (Literal, etc.) and async features
 license = {text = "MIT"}
 authors = [
   { name = "Martin Alge", email = "martin@alge.se" }
 ]
-keywords = ["repository", "async", "database", "abstraction", "crud"]
+keywords = [
+    "repository",
+    "async",
+    "database",
+    "abstraction",
+    "crud",
+    "orm",
+    "asyncio",
+    "mongodb",
+    "postgresql",
+    "sqlite",
+    "mysql"
+]
 classifiers = [
-  "Development Status :: 4 - Beta",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.12",
+  "Development Status :: 4 - Beta", # Or adjust as appropriate (3 - Alpha, 5 - Production/Stable)
+  "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Framework :: AsyncIO",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 
+# Core dependencies required by the base library
 dependencies = [
-    "pydantic",
+    # Pydantic is used heavily in the model validator and potentially for entities
+    # Choose v1 or v2 based on your preference/compatibility needs.
+    # Using v2 as it's the latest major version.
+    "pydantic>=2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/your-username/async-repository" # Replace with your repo URL
+Repository = "https://github.com/your-username/async-repository" # Replace with your repo URL
+# Bug-Tracker = "https://github.com/your-username/async-repository/issues"
 
 [project.optional-dependencies]
+# Dependencies for specific database backends
 postgresql = [
-  "asyncpg>=0.27"
+  "asyncpg>=0.27", # Used by PostgresqlRepository
 ]
-
 mongodb = [
-  "pymongo>=4.0",
-  "motor>=3.1"
+  "pymongo>=4.0", # Base driver for Motor
+  "motor>=3.1",   # Async driver used by MongoDBRepository
+]
+sqlite = [
+    "aiosqlite>=0.17", # Used by SqliteRepository
+]
+mysql = [
+    "aiomysql>=0.1",   # Used by MySQLRepository
 ]
 
+# Convenience group to install all backend dependencies
+all = [
+    "async-repository[postgresql]",
+    "async-repository[mongodb]",
+    "async-repository[sqlite]",
+    "async-repository[mysql]",
+]
+
+# Dependencies for development (testing, linting, type checking)
 dev = [
-  "pytest",
-  "pytest-asyncio",
-  "mypy",
+  "pytest>=7.0",
+  "pytest-asyncio>=0.20", # For testing async code with pytest
+  "pytest-cov>=4.0",      # For test coverage
+  "mypy>=1.0",            # Static type checker
+  "ruff>=0.1.0",          # Fast linter and formatter
+  "types-Pydantic",       # Pydantic type stubs for mypy
+  "types-PyMongo",        # Optional: Motor/PyMongo type stubs for mypy
+
+  # Add backend drivers needed for testing all implementations
+  "asyncpg>=0.27",
+  "motor>=3.1",
+  "aiosqlite>=0.17",
+  "aiomysql>=0.1",
 ]
 
 [tool.setuptools]
+# This tells setuptools that the package source code is under the 'src' directory
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
+# Automatically find packages under the 'src' directory
 where = ["src"]
+# You could exclude tests if they were under src, e.g., exclude = ["tests*"]
+
+# --- Tool Configurations ---
 
 [tool.pytest.ini_options]
+# Add 'src' to pythonpath so pytest can find the modules
 pythonpath = ["src"]
+# Specify async tests marker for pytest-asyncio
+asyncio_mode = "auto"
+# Add common options like verbose output, showing locals in tracebacks
+addopts = "-v -l --tb=short"
+# Define test paths (adjust if your tests are elsewhere)
+testpaths = [
+    "tests",
+]
+
+[tool.mypy]
+# Basic mypy configuration
+python_version = "3.8"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true # Enforce type hints on function definitions
+check_untyped_defs = true
+disallow_incomplete_defs = true
+# Specify the source directory for type checking
+files = ["src/"]
+# Pydantic plugin is often necessary for proper Pydantic type checking
+plugins = ["pydantic.mypy"]
+# Ignore missing imports for optional dependencies if they cause issues
+# Example:
+# [tool.mypy]
+# ignore_missing_imports = true # Use cautiously
+# [[tool.mypy.overrides]]
+# module = ["motor.*", "asyncpg.*", "aiosqlite.*", "aiomysql.*"]
+# ignore_missing_imports = true
+
+[tool.ruff]
+# Select common rulesets (errors, warnings, pyflakes, pyupgrade, isort)
+select = ["E", "F", "W", "UP", "I"]
+ignore = [
+    "E501", # Ignore line length errors if you prefer longer lines
+]
+line-length = 88 # Or your preferred line length
+
+# Specify the source directory
+src = ["src"]
+
+[tool.ruff.isort]
+# Ensure compatibility with black or other formatters if used
+# profile = "black"
+# Combine imports as needed
+# combine_as_imports = true
+
+[tool.coverage.run]
+# Exclude test files from coverage reports
+omit = ["tests/*"]
+# Specify the source directory for coverage analysis
+source = ["src"]
