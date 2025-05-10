@@ -1,215 +1,359 @@
-# tests/database_implementations/test_overloading.py
+# tests/base/update/test_field_conflicts.py
 
 import pytest
-from pydantic import BaseModel
-from typing import Optional, List
-
-# Import internal expression classes and builder
-from async_repository.base.query import (
-    QueryBuilder, Field, Expression, FilterCondition, CombinedCondition, QueryOptions
+from async_repository.base.update import (
+    Update,
+    SetOperation,
+    PushOperation,
+    PopOperation,
+    PullOperation,
+    UnsetOperation,
+    IncrementOperation,
+    MinOperation,
+    MaxOperation,
+    MultiplyOperation,
 )
-
-# Define a simple model for builder tests if needed
-class SampleModel(BaseModel):
-    id: str
-    name: str
-    age: int
-    email: Optional[str] = None
-    tags: List[str] = []
+from tests.conftest import Entity
+from tests.base.conftest import assert_operation_present
 
 
-# --- Tests for Field Operator Overloading ---
+# Tests for basic field conflict detection (same field path)
 
-def test_field_equality_operators():
-    """Test == and != operators on Field."""
-    field = Field("name")
-    eq_cond = field == "test"
-    ne_cond = field != "other"
+def test_set_operation_conflict_detection():
+    """Test that set operations detect field conflicts."""
+    update = Update(Entity)
+    update.set("name", "Test")
 
-    assert isinstance(eq_cond, FilterCondition)
-    assert eq_cond.field_path == "name"
-    assert eq_cond.operator == "eq"
-    assert eq_cond.value == "test"
+    with pytest.raises(ValueError) as excinfo:
+        update.set("name", "Conflict")
 
-    assert isinstance(ne_cond, FilterCondition)
-    assert ne_cond.field_path == "name"
-    assert ne_cond.operator == "ne"
-    assert ne_cond.value == "other"
+    assert "name" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_field_comparison_operators():
-    """Test >, <, >=, <= operators on Field."""
-    field = Field("age")
-    gt_cond = field > 18
-    lt_cond = field < 65
-    ge_cond = field >= 21
-    le_cond = field <= 100
+def test_push_operation_conflict_detection():
+    """Test that push operations detect field conflicts."""
+    update = Update(Entity)
+    update.push("tags", "tag1")
 
-    assert isinstance(gt_cond, FilterCondition) and gt_cond.operator == "gt" and gt_cond.value == 18
-    assert isinstance(lt_cond, FilterCondition) and lt_cond.operator == "lt" and lt_cond.value == 65
-    assert isinstance(ge_cond, FilterCondition) and ge_cond.operator == "ge" and ge_cond.value == 21
-    assert isinstance(le_cond, FilterCondition) and le_cond.operator == "le" and le_cond.value == 100
+    with pytest.raises(ValueError) as excinfo:
+        update.push("tags", "tag2")
+
+    assert "tags" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_field_methods():
-    """Test methods like .in_(), .nin(), .like(), etc. on Field."""
-    field = Field("tags")
-    field_name = Field("name") # For string ops
+def test_pop_operation_conflict_detection():
+    """Test that pop operations detect field conflicts."""
+    update = Update(Entity)
+    update.pop("tags")
 
-    in_cond = field.in_(["tag1", "tag2"])
-    nin_cond = field.nin(["tag3"])
-    like_cond = field_name.like("tag%")
-    contains_cond = field.contains("tag") # Can apply to list or string
-    startswith_cond = field_name.startswith("t")
-    endswith_cond = field_name.endswith("g")
-    exists_cond = field.exists()
-    not_exists_cond = field.exists(False)
+    with pytest.raises(ValueError) as excinfo:
+        update.pop("tags", -1)
 
-    assert isinstance(in_cond, FilterCondition) and in_cond.operator == "in" and in_cond.value == ["tag1", "tag2"]
-    assert isinstance(nin_cond, FilterCondition) and nin_cond.operator == "nin" and nin_cond.value == ["tag3"]
-    assert isinstance(like_cond, FilterCondition) and like_cond.operator == "like" and like_cond.value == "tag%"
-    assert isinstance(contains_cond, FilterCondition) and contains_cond.operator == "contains" and contains_cond.value == "tag"
-    assert isinstance(startswith_cond, FilterCondition) and startswith_cond.operator == "startswith" and startswith_cond.value == "t"
-    assert isinstance(endswith_cond, FilterCondition) and endswith_cond.operator == "endswith" and endswith_cond.value == "g"
-    assert isinstance(exists_cond, FilterCondition) and exists_cond.operator == "exists" and exists_cond.value is True
-    assert isinstance(not_exists_cond, FilterCondition) and not_exists_cond.operator == "exists" and not_exists_cond.value is False
-
-    # Test type errors for string methods
-    with pytest.raises(TypeError): field_name.like(123)
-    with pytest.raises(TypeError): field_name.startswith(True)
-    with pytest.raises(TypeError): field_name.endswith(None)
-    # Test type errors for collection methods
-    with pytest.raises(TypeError): field.in_(123)
-    with pytest.raises(TypeError): field.nin("abc")
-    # Test type errors for exists
-    with pytest.raises(TypeError): field.exists("yes") # type: ignore
+    assert "tags" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_logical_operators():
-    """Test logical & (AND) and | (OR) operators between Expressions."""
-    name_cond = Field("name") == "Alice"
-    age_cond = Field("age") > 30
+def test_pull_operation_conflict_detection():
+    """Test that pull operations detect field conflicts."""
+    update = Update(Entity)
+    update.pull("tags", "tag1")
 
-    # Test AND
-    and_cond = name_cond & age_cond
-    assert isinstance(and_cond, CombinedCondition)
-    assert and_cond.logical_operator == "and"
-    assert and_cond.left is name_cond
-    assert and_cond.right is age_cond
+    with pytest.raises(ValueError) as excinfo:
+        update.pull("tags", "tag2")
 
-    # Test OR
-    or_cond = name_cond | age_cond
-    assert isinstance(or_cond, CombinedCondition)
-    assert or_cond.logical_operator == "or"
-    assert or_cond.left is name_cond
-    assert or_cond.right is age_cond
-
-    # Test chaining
-    active_cond = Field("active") == True
-    chained_and = name_cond & age_cond & active_cond
-    assert isinstance(chained_and, CombinedCondition)
-    assert chained_and.logical_operator == "and"
-    assert isinstance(chained_and.left, CombinedCondition) # Should be nested
-    assert chained_and.right is active_cond
+    assert "tags" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-# --- Tests for QueryBuilder ---
+def test_unset_operation_conflict_detection():
+    """Test that unset operations detect field conflicts."""
+    update = Update(Entity)
+    update.unset("metadata.key1")
 
-def test_query_builder_field_access():
-    """Test accessing fields via the builder's 'fields' proxy."""
-    qb_model = QueryBuilder(SampleModel)
-    qb_generic = QueryBuilder() # Model-less
+    with pytest.raises(ValueError) as excinfo:
+        update.unset("metadata.key1")
 
-    # Model-based
-    assert isinstance(qb_model.fields.name, Field)
-    assert qb_model.fields.name.path == "name"
-    assert isinstance(qb_model.fields.tags, Field)
-    assert qb_model.fields.tags.path == "tags"
-    with pytest.raises(AttributeError): _ = qb_model.fields.invalid_field
-
-    # Generic
-    assert isinstance(qb_generic.fields.any_field, Field)
-    assert qb_generic.fields.any_field.path == "any_field"
-    assert isinstance(qb_generic.fields.nested.path, Field)
-    assert qb_generic.fields.nested.path.path == "nested.path"
+    assert "metadata.key1" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_query_builder_filter_method_builds_expression():
-    """Test adding filters creates the internal expression structure."""
-    qb = QueryBuilder()
-    name_cond = qb.fields.name == "Alice"
-    age_cond = qb.fields.age > 30
+def test_increment_operation_conflict_detection():
+    """Test that increment operations detect field conflicts."""
+    update = Update(Entity)
+    update.increment("value", 5)
 
-    qb.filter(name_cond)
-    assert qb._expression is name_cond # First filter sets the expression
+    with pytest.raises(ValueError) as excinfo:
+        update.increment("value", 10)
 
-    qb.filter(age_cond)
-    assert isinstance(qb._expression, CombinedCondition) # Second filter combines with AND
-    assert qb._expression.logical_operator == "and"
-    assert qb._expression.left is name_cond
-    assert qb._expression.right is age_cond
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_query_builder_build_options():
-    """Test building QueryOptions with various settings."""
-    qb = QueryBuilder(SampleModel)
-    options = (
-        qb.filter(qb.fields.name == "Test")
-        .filter(qb.fields.age < 100)
-        .sort_by(qb.fields.age, descending=True)
-        .limit(50)
-        .offset(10)
-        .timeout(15.5)
-        .build()
-    )
+def test_decrement_operation_conflict_detection():
+    """Test that decrement operations detect field conflicts."""
+    update = Update(Entity)
+    update.decrement("value", 5)
 
-    assert isinstance(options, QueryOptions)
-    assert isinstance(options.expression, QueryLogical) # Should be QueryLogical after translation
-    assert options.expression.operator == "and"
-    # We don't check the exact translated expression structure here,
-    # that's covered by the implementation tests (test_dsl_query.py)
-    assert options.sort_by == "age"
-    assert options.sort_desc is True
-    assert options.limit == 50
-    assert options.offset == 10
-    assert options.timeout == 15.5
-    assert options.random_order is False
+    with pytest.raises(ValueError) as excinfo:
+        update.decrement("value", 10)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_query_builder_random_order_overrides_sort():
-    """Test that random_order clears sort settings."""
-    qb = QueryBuilder()
-    options = (
-        qb.sort_by(qb.fields.name)
-        .random_order()
-        .build()
-    )
-    assert options.random_order is True
-    assert options.sort_by is None
-    assert options.sort_desc is False
+def test_min_operation_conflict_detection():
+    """Test that min operations detect field conflicts."""
+    update = Update(Entity)
+    update.min("value", 0)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.min("value", 10)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_query_builder_sort_validation_with_model():
-    """Test validation of sort field when a model is provided."""
-    qb = QueryBuilder(SampleModel)
-    qb.sort_by(qb.fields.name) # Valid
-    with pytest.raises(AttributeError, match="Invalid sort field path"):
-        qb.sort_by(Field("invalid_field")) # Use Field directly to bypass proxy check
+def test_max_operation_conflict_detection():
+    """Test that max operations detect field conflicts."""
+    update = Update(Entity)
+    update.max("value", 100)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.max("value", 200)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
 
 
-def test_query_builder_repr_methods():
-    """Test __repr__ methods for builder components."""
-    qb = QueryBuilder(SampleModel)
-    field = qb.fields.name
-    filter_cond = field == "Test"
-    combined = filter_cond & (qb.fields.age > 18)
-    options = qb.filter(combined).limit(10).build()
+def test_multiply_operation_conflict_detection():
+    """Test that multiply operations detect field conflicts."""
+    update = Update(Entity)
+    update.mul("value", 2)
 
-    assert repr(field) == "Field(path='name')"
-    assert repr(filter_cond) == "FilterCondition('name', 'eq', 'Test')"
-    assert "CombinedCondition('and', FilterCondition('name', 'eq', 'Test'), FilterCondition('age', 'gt', 18))" in repr(combined)
-    # Check QueryOptions repr contains key parts
-    options_repr = repr(options)
-    assert "QueryOptions(" in options_repr
-    assert "expression=QueryLogical(operator='and'," in options_repr # Checks translated output
-    assert "limit=10" in options_repr
+    with pytest.raises(ValueError) as excinfo:
+        update.mul("value", 3)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+# Tests for different operation types on the same field
+
+def test_push_pop_conflict():
+    """Test that push conflicts with pop on the same field."""
+    update = Update(Entity)
+    update.push("tags", "tag1")
+
+    with pytest.raises(ValueError) as excinfo:
+        update.pop("tags")
+
+    assert "tags" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_set_increment_conflict():
+    """Test that set conflicts with increment on the same field."""
+    update = Update(Entity)
+    update.set("value", 100)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.increment("value", 5)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_increment_multiply_conflict():
+    """Test that increment conflicts with multiply on the same field."""
+    update = Update(Entity)
+    update.increment("float_value", 10.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.mul("float_value", 2.0)
+
+    assert "float_value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_unset_set_conflict():
+    """Test that unset conflicts with set on the same field."""
+    update = Update(Entity)
+    update.unset("metadata.key1")
+
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata.key1", "new value")
+
+    assert "metadata.key1" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_min_max_conflict():
+    """Test that min conflicts with max on the same field."""
+    update = Update(Entity)
+    update.min("value", 0)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.max("value", 100)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_increment_decrement_conflict():
+    """Test that increment conflicts with decrement on the same field."""
+    update = Update(Entity)
+    update.increment("value", 5)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.decrement("value", 3)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_decrement_increment_conflict():
+    """Test that decrement conflicts with increment on the same field."""
+    update = Update(Entity)
+    update.decrement("value", 3)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.increment("value", 5)
+
+    assert "value" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+# Tests for nested field conflicts
+
+def test_nested_field_exact_conflict():
+    """Test that operations on the same nested field raise ValueError."""
+    update = Update(Entity)
+    update.set("metadata.name", "Test Name")
+
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata.name", "New Name")
+
+    assert "metadata.name" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+def test_deeply_nested_field_conflict():
+    """Test that operations on the same deeply nested field raise ValueError."""
+    update = Update(Entity)
+    update.set("metadata.stats.views", 100)
+
+    with pytest.raises(ValueError) as excinfo:
+        update.unset("metadata.stats.views")
+
+    assert "metadata.stats.views" in str(excinfo.value)
+    assert "already has an operation" in str(excinfo.value)
+
+
+# Tests for parent-child field conflicts
+
+def test_parent_to_child_field_conflict():
+    """Test conflict when setting a child field after its parent is already set."""
+    update = Update(Entity)
+    update.set("metadata", {"key1": "value1", "key2": 42})
+
+    # Operation on a child field after parent field has an operation
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata.key1", "new value")
+
+    assert "metadata" in str(excinfo.value)
+    assert "Parent-child field conflicts are not allowed" in str(excinfo.value)
+
+
+def test_child_to_parent_field_conflict():
+    """Test conflict when setting a parent field after its child is already set."""
+    update = Update(Entity)
+    update.set("metadata.key1", "value1")
+
+    # Operation on a parent field after child field has an operation
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata", {"key1": "new value", "key2": 42})
+
+    assert "metadata" in str(excinfo.value)
+    assert "Parent-child field conflicts are not allowed" in str(excinfo.value)
+
+
+def test_deeply_nested_parent_to_child_conflict():
+    """Test that parent-to-child conflicts are detected with deeply nested objects."""
+    update = Update(Entity)
+
+    # Set a deeply nested parent field
+    update.set("metadata.location.address",
+               {"street": "123 Main St", "city": "New York"})
+
+    # Attempt to set a child field
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata.location.address.street", "456 Elm St")
+
+    assert "metadata.location.address" in str(excinfo.value)
+    assert "Parent-child field conflicts are not allowed" in str(excinfo.value)
+
+
+def test_deeply_nested_child_to_parent_conflict():
+    """Test that child-to-parent conflicts are detected with deeply nested objects."""
+    update = Update(Entity)
+    update.set("metadata.location.address.city", "Boston")
+
+    # Attempt to set the parent field
+    with pytest.raises(ValueError) as excinfo:
+        update.set("metadata.location.address",
+                   {"street": "789 Oak St", "city": "Chicago"})
+
+    assert "metadata.location.address" in str(excinfo.value)
+    assert "Parent-child field conflicts are not allowed" in str(excinfo.value)
+
+
+# Tests for operations on different fields (positive cases)
+
+def test_operations_on_different_fields():
+    """Test that operations on different fields work correctly."""
+    update = Update(Entity)
+    update.set("name", "Entity Name")
+    update.set("owner", "user@example.com")
+    update.push("tags", "tag1")
+    update.increment("value", 50)
+
+    result = update.build()
+    assert len(result) == 4
+    assert_operation_present(result, SetOperation, "name", {"value": "Entity Name"})
+    assert_operation_present(result, SetOperation, "owner",
+                             {"value": "user@example.com"})
+    assert_operation_present(result, PushOperation, "tags", {"items": ["tag1"]})
+    assert_operation_present(result, IncrementOperation, "value", {"amount": 50})
+
+
+def test_numeric_operations_on_different_fields():
+    """Test that numeric operations on different fields work correctly."""
+    update = Update(Entity)
+    update.increment("value", 5)
+    update.min("float_value", 10.0)
+
+    result = update.build()
+    assert len(result) == 2
+    assert_operation_present(result, IncrementOperation, "value", {"amount": 5})
+    assert_operation_present(result, MinOperation, "float_value", {"value": 10.0})
+
+
+def test_sibling_field_updates_work():
+    """Test that updating multiple sibling fields in a nested object works."""
+    update = Update(Entity)
+
+    # Set two different fields under the same parent
+    update.set("metadata.city", "New York")
+    update.set("metadata.zipcode", "10001")
+
+    # This should build successfully with no conflicts
+    result = update.build()
+
+    # Verify both operations were included
+    assert len(result) == 2
+    assert_operation_present(result, SetOperation, "metadata.city",
+                             {"value": "New York"})
+    assert_operation_present(result, SetOperation, "metadata.zipcode",
+                             {"value": "10001"})
