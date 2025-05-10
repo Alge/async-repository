@@ -487,6 +487,7 @@ class Entity:
     updated_at: Optional[datetime] = None
     owner: Optional[str] = None
     profile: ProfileData = field(default_factory=ProfileData)
+    binary_blob: bytes = field(default=b"1000100100100010001001010101111001011")
 
     def copy(self):
         # Using asdict might require handling nested dataclasses if deep copy needed

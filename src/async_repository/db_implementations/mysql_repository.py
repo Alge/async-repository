@@ -769,7 +769,6 @@ class MySQLRepository(Repository[T], Generic[T]):
             self._handle_db_error(e, f"upserting entity app_id {app_id}")
             raise  # Should not be reached
 
-
     async def update_one(
             self,
             options: QueryOptions,
@@ -958,7 +957,8 @@ class MySQLRepository(Repository[T], Generic[T]):
                     # Handle specific errors or re-raise
                     if isinstance(e, ObjectNotFoundException):
                         raise  # Re-raise the expected exception
-                    self._handle_db_error(e, f"updating entity during transaction {log_id_str}")
+                    self._handle_db_error(e,
+                                          f"updating entity during transaction {log_id_str}")
                     raise  # Should not be reached if _handle_db_error raises
 
         except ObjectNotFoundException:
@@ -974,9 +974,9 @@ class MySQLRepository(Repository[T], Generic[T]):
                 f"Error setting up update_one (filter: {options.expression!r}): {e}",
                 exc_info=True
             )
-            self._handle_db_error(e, f"setting up update_one for filter {options.expression!r}")
+            self._handle_db_error(e,
+                                  f"setting up update_one for filter {options.expression!r}")
             raise  # Should not be reached if _handle_db_error raises
-
 
     async def update_many(
             self,
@@ -1227,6 +1227,30 @@ class MySQLRepository(Repository[T], Generic[T]):
 
         return serialized_data
 
+    def _process_json_recursively(self, data):
+        """
+        Recursively process data structures to convert any JSON strings into Python objects.
+        This ensures nested JSON structures are properly decoded at any depth.
+        """
+        if isinstance(data, dict):
+            # Process each value in the dictionary
+            return {k: self._process_json_recursively(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            # Process each item in the list
+            return [self._process_json_recursively(item) for item in data]
+        elif isinstance(data, str) and data.startswith(("{", "[")) and data.endswith(
+                ("]", "}")):
+            try:
+                # If it looks like a JSON string, try to parse it and process its contents
+                parsed = json.loads(data)
+                return self._process_json_recursively(parsed)
+            except (json.JSONDecodeError, ValueError):
+                # If parsing fails, keep the original string
+                return data
+        else:
+            # For all other data types, return as is
+            return data
+
     def _deserialize_record(self, record_data: Dict[str, Any]) -> T:
         """Convert MySQL record dict into an entity object T."""
         if record_data is None:
@@ -1305,6 +1329,7 @@ class MySQLRepository(Repository[T], Generic[T]):
 
             processed_dict[key] = value
 
+        # --- ID Field Mapping ---
         db_id_value = processed_dict.get(self.db_id_field)
 
         if db_id_value is not None:
@@ -1334,6 +1359,37 @@ class MySQLRepository(Repository[T], Generic[T]):
                     processed_dict[self.app_id_field] = None
             except Exception:
                 pass
+
+        # --- Apply recursive JSON processing to known complex fields ---
+        # Helper function for recursive JSON processing
+        def _process_json_recursively(data):
+            """Recursively process data to convert any JSON strings into Python objects."""
+            if isinstance(data, dict):
+                return {k: _process_json_recursively(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [_process_json_recursively(item) for item in data]
+            elif isinstance(data, str) and data.startswith(
+                    ("{", "[")) and data.endswith(("]", "}")):
+                try:
+                    return _process_json_recursively(json.loads(data))
+                except (json.JSONDecodeError, ValueError):
+                    return data
+            else:
+                return data
+
+        # List of field names known to contain JSON data
+        json_field_names = ['metadata', 'profile', 'tags']
+        for field_name in json_field_names:
+            if field_name in processed_dict and processed_dict[field_name] is not None:
+                processed_dict[field_name] = _process_json_recursively(
+                    processed_dict[field_name])
+
+        # Also check for any fields ending with known JSON suffixes
+        json_suffixes = ['_json', '_data', '_config', '_settings']
+        for key in list(processed_dict.keys()):
+            if any(key.endswith(suffix) for suffix in json_suffixes) and processed_dict[
+                key] is not None:
+                processed_dict[key] = _process_json_recursively(processed_dict[key])
 
         try:
             return self.entity_type(**processed_dict)
@@ -1451,12 +1507,19 @@ class MySQLRepository(Repository[T], Generic[T]):
             if isinstance(op, SetOperation):
                 if is_nested and json_path:
                     value = op.value
-                    param_value = json.dumps(value)
+                    if isinstance(value, (dict, list, tuple, set)):
+                        # Complex values still need JSON encoding
+                        param_value = json.dumps(value)
+                    else:
+                        # For simple values, don't JSON encode - convert to string if needed
+                        param_value = str(value) if hasattr(value,
+                                                            '__str__') else value
+
                     params.append(param_value)
                     set_clauses.append(
                         f"{quoted_base_column} = JSON_SET("
                         f"COALESCE({quoted_base_column}, JSON_OBJECT()), "
-                        f"'{json_path}', CAST(%s AS JSON))"
+                        f"'{json_path}', %s)"
                     )
                 else:
                     value = op.value
@@ -1514,27 +1577,37 @@ class MySQLRepository(Repository[T], Generic[T]):
                     continue
 
                 if is_nested and json_path:
-                    # Nested push (Keep previous working logic - seems okay for now)
+                    # Initialize empty array if needed
                     init_expr = f"COALESCE({quoted_base_column}, JSON_OBJECT())"
-                    ensure_array_expr = f"JSON_MERGE_PRESERVE({init_expr}, JSON_OBJECT('{json_path}', JSON_ARRAY()))"
+                    # Use JSON_MERGE instead of JSON_MERGE_PRESERVE for compatibility
+                    ensure_array_expr = f"JSON_MERGE({init_expr}, JSON_OBJECT('{json_path}', JSON_ARRAY()))"
                     current_col_expr = ensure_array_expr
+
                     for item in op.items:
-                        param_value = json.dumps(item)
+                        # Differentiate between complex and simple values
+                        if isinstance(item, (dict, list, tuple, set)):
+                            # For complex values, JSON encode
+                            param_value = json.dumps(item)
+                        else:
+                            # For simple values (strings, numbers, etc.), don't JSON encode
+                            param_value = str(item) if hasattr(item,
+                                                               '__str__') else item
+
                         params.append(param_value)
-                        current_col_expr = f"JSON_ARRAY_APPEND({current_col_expr}, '{json_path}', CAST(%s AS JSON))"
+                        current_col_expr = f"JSON_ARRAY_APPEND({current_col_expr}, '{json_path}', %s)"
+
                     set_clauses.append(f"{quoted_base_column} = {current_col_expr}")
+
                 else:
-                    # --- Top-Level Push - Simplest Form ---
-                    # Generate one SET assignment per item using the column itself
-                    # Use string literal '[]' for COALESCE default
+                    # Top-level push implementation remains the same
                     for item in op.items:
                         params.append(item)
                         set_clauses.append(
                             f"{quoted_base_column} = JSON_ARRAY_APPEND("
-                            f"COALESCE({quoted_base_column}, '[]'), "  # Use string literal
-                            f"'$', %s)"  # Append raw value parameter
+                            f"COALESCE({quoted_base_column}, '[]'), "
+                            f"'$', %s)"
                         )
-                    # --- End Simplest Form ---
+
 
             # --- Handle PopOperation ---
             elif isinstance(op, PopOperation):
@@ -1559,22 +1632,47 @@ class MySQLRepository(Repository[T], Generic[T]):
                     raise NotImplementedError(
                         "PullOperation with dictionary criteria not supported in MySQL JSON updates."
                     )
+
                 if is_nested and json_path:
-                    raise NotImplementedError(
-                        "PullOperation for nested arrays not directly supported in MySQL JSON updates."
-                    )
-                else:
-                    json_val_param = json.dumps(value_to_pull)
-                    params.append(json_val_param)
+                    # Convert pull value to appropriate format for comparison
+                    if isinstance(value_to_pull, (dict, list, tuple, set)):
+                        param_value = json.dumps(value_to_pull)
+                    else:
+                        param_value = str(value_to_pull) if hasattr(value_to_pull,
+                                                                    '__str__') else value_to_pull
+
+                    params.append(param_value)
+
+                    # Add JSON_UNQUOTE to the element in the JSON_ARRAYAGG function
                     set_clauses.append(
-                        f"{quoted_base_column} = COALESCE("
-                        f"  (SELECT JSON_ARRAYAGG(j.value) FROM "
-                        f"   JSON_TABLE(COALESCE({quoted_base_column}, JSON_ARRAY()), '$[*]' COLUMNS("
-                        f"     value JSON PATH '$'"
-                        f"   )) AS j "
-                        f"   WHERE j.value != CAST(%s AS JSON)),"
+                        f"{quoted_base_column} = JSON_SET("
+                        f"COALESCE({quoted_base_column}, JSON_OBJECT()), "
+                        f"'{json_path}', "
+                        f"COALESCE("
+                        # The key fix is here: JSON_UNQUOTE around the element
+                        f"  (SELECT JSON_ARRAYAGG(JSON_UNQUOTE(element)) "
+                        f"   FROM JSON_TABLE(JSON_EXTRACT({quoted_base_column}, '{json_path}'), "
+                        f"   '$[*]' COLUMNS(element JSON PATH '$')) AS jt "
+                        f"   WHERE JSON_UNQUOTE(element) != %s),"
                         f"  JSON_ARRAY()"
                         f")"
+                        f")"
+                    )
+
+                else:
+                    # Just use plain string value for comparison
+                    params.append(str(value_to_pull))
+
+                    # Simple query that uses JSON_ARRAYAGG without CAST
+                    set_clauses.append(
+                        f"""
+                        {quoted_base_column} = COALESCE(
+                            (SELECT JSON_ARRAYAGG(element) 
+                             FROM JSON_TABLE({quoted_base_column}, '$[*]' COLUMNS(element JSON PATH '$')) AS jt
+                             WHERE JSON_UNQUOTE(element) != %s),
+                            JSON_ARRAY()
+                        )
+                        """
                     )
 
             else:
@@ -1684,16 +1782,19 @@ class MySQLRepository(Repository[T], Generic[T]):
                 if is_json_path or is_target_array:
                     # For arrays/objects in JSON
                     prepared_val = prepare_for_storage(val)
+
                     if isinstance(val, str) and is_target_array:
-                        # String value in JSON array
-                        current_params.append(val)
+                        # String value in JSON array - pre-format as JSON string
+                        json_formatted_string = json.dumps(val)  # This adds the quotes
+                        current_params.append(json_formatted_string)
 
                         if is_json_path:
                             sql = f"JSON_CONTAINS({quoted_base_column}, %s, '{json_path}')"
                         else:
-                            sql = f"JSON_CONTAINS({quoted_field}, JSON_QUOTE(%s))"
+                            sql = f"JSON_CONTAINS({quoted_field}, %s)"
+
                     else:
-                        # For objects/values, use JSON_CONTAINS
+                        # For objects/values, use JSON_CONTAINS with json.dumps
                         param_json_string = json.dumps(prepared_val)
                         current_params.append(param_json_string)
 
@@ -1804,8 +1905,25 @@ class MySQLRepository(Repository[T], Generic[T]):
         """
         log_message = f"Error during {context}: {error}"
 
-        # --- Handle aiomysql/pymysql specific errors ---
-        if hasattr(error, 'args') and len(error.args) > 0:
+        # --- FIRST: Handle application/business logic errors from repository/framework ---
+        if isinstance(
+                error,
+                (
+                        ValueError,
+                        # Includes unsupported ops, bad values, translation errors
+                        TypeError,  # Bad types passed to operations
+                        NotImplementedError,  # Features not implemented
+                        InvalidPathError,  # From ModelValidator
+                        KeyAlreadyExistsException,  # Re-raise if caught
+                        ObjectNotFoundException,  # Re-raise if caught
+                )
+        ):
+            # Log potentially expected errors without full traceback
+            self._logger.error(log_message)
+            raise error  # Re-raise the original specific exception
+
+        # --- SECOND: Handle aiomysql/pymysql specific database errors ---
+        elif hasattr(error, 'args') and len(error.args) > 0:
             # MySQL errors often have the error code in the first argument
             errno = getattr(error, 'errno', None)
             sqlstate = getattr(error, 'sqlstate', None)
@@ -1876,30 +1994,13 @@ class MySQLRepository(Repository[T], Generic[T]):
                     f"Detail: {error}"
                 ) from error
 
-            # Catch-all for other specific MySQL errors
+            # Catch-all for other specific MySQL errors with error codes
             else:
                 raise RuntimeError(
                     f"A specific database error occurred during {context}: {error}"
                 ) from error
 
-        # --- Handle specific non-DB errors from repository/framework logic ---
-        elif isinstance(
-                error,
-                (
-                        ValueError,
-                        # Includes unsupported ops, bad values, translation errors
-                        TypeError,  # Bad types passed to operations
-                        NotImplementedError,  # Features not implemented
-                        InvalidPathError,  # From ModelValidator
-                        KeyAlreadyExistsException,  # Re-raise if passed through
-                        ObjectNotFoundException,  # Re-raise if passed through
-                )
-        ):
-            # Log potentially expected errors without traceback
-            self._logger.error(log_message)
-            raise error  # Re-raise the original specific exception
-
-        # --- Handle truly unexpected errors ---
+        # --- THIRD: Handle truly unexpected errors (anything else) ---
         else:
             # Log with traceback as it's not a recognized DB or framework error
             self._logger.error(log_message, exc_info=True)
