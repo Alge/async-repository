@@ -12,129 +12,156 @@ from async_repository.base.update import (
     PopOperation,
     PullOperation,
     UnsetOperation,
-    # No need for validator exceptions here as we test without model
 )
-
 from tests.base.conftest import assert_operation_present
 
 
-def test_update_without_model():
-    """Test basic operations without a model class build the correct list."""
-    update = Update()  # No model provided
+# --- Test basic operations without a model ---
 
-    # Basic operations with string fields
-    update.set("name", "John Doe")
-    update.increment("counter", 5)
-    update.push("tags", "new_tag")
-
+def test_set_without_model():
+    """Test set operation without a model."""
+    update = Update().set("name", "John Doe")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 3
-
-    # Check the operations in the list
+    assert len(result) == 1
     assert_operation_present(result, SetOperation, "name", {"value": "John Doe"})
+
+def test_increment_without_model():
+    """Test increment operation without a model."""
+    update = Update().increment("counter", 5)
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, IncrementOperation, "counter", {"amount": 5})
+
+def test_push_without_model():
+    """Test push operation without a model."""
+    update = Update().push("tags", "new_tag")
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, PushOperation, "tags", {"items": ["new_tag"]})
 
 
-def test_fields_proxy_without_model():
-    """Test using the fields proxy without a model class builds correct list."""
-    update = Update()  # No model provided
+# --- Test fields proxy usage without a model ---
 
-    # Using dynamic fields proxy
-    update.set(update.fields.name, "John Doe")
-    update.increment(update.fields.counter, 5)
-    update.push(update.fields.tags, "new_tag")
-
-    # Nested fields access
-    update.set(update.fields.user.profile.age, 30)
-    update.set(update.fields.preferences.theme, "dark")
-
-    # Multi-level nesting
-    update.push(update.fields.posts.comments.replies, "New reply")
-
+def test_fields_proxy_set_without_model():
+    """Test set with fields proxy without a model."""
+    update = Update()
+    update.set(update.fields.name, "Jane Doe")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 6
+    assert len(result) == 1
+    assert_operation_present(result, SetOperation, "name", {"value": "Jane Doe"})
 
-    # Check operations using assert_operation_present
-    assert_operation_present(result, SetOperation, "name", {"value": "John Doe"})
-    assert_operation_present(result, IncrementOperation, "counter", {"amount": 5})
-    assert_operation_present(result, PushOperation, "tags", {"items": ["new_tag"]})
-    assert_operation_present(result, SetOperation, "user.profile.age", {"value": 30})
-    assert_operation_present(
-        result, SetOperation, "preferences.theme", {"value": "dark"}
-    )
-    assert_operation_present(
-        result, PushOperation, "posts.comments.replies", {"items": ["New reply"]}
-    )
-
-
-def test_complex_operations_without_model():
-    """Test more complex operations without a model class build correct list."""
-    update = Update()  # No model provided
-
-    # Min/max/mul operations
-    update.min(update.fields.score, 0)
-    update.max(update.fields.score, 100)  # Note: Multiple ops on score allowed
-    update.mul(update.fields.multiplier, 1.5)
-
-    # Array operations
-    update.push(update.fields.items, {"id": 1, "name": "Item 1"})
-    update.pop(update.fields.recent_items, -1)  # Remove first item, position = -1
-    update.pull(update.fields.tags, "old_tag")
-
-    # Nested operations
-    update.unset(update.fields.user.temporary_data)
-    update.increment(update.fields.stats.visits, 1)
-
+def test_fields_proxy_increment_without_model():
+    """Test increment with fields proxy without a model."""
+    update = Update()
+    update.increment(update.fields.visits, 3)
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 8  # All operations are added
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "visits", {"amount": 3})
 
-    # Check operations using assert_operation_present
-    assert_operation_present(result, MinOperation, "score", {"value": 0})
-    assert_operation_present(result, MaxOperation, "score", {"value": 100})
-    assert_operation_present(result, MultiplyOperation, "multiplier", {"factor": 1.5})
-    assert_operation_present(
-        result, PushOperation, "items", {"items": [{"id": 1, "name": "Item 1"}]}
-    )
-    assert_operation_present(result, PopOperation, "recent_items", {"position": -1})
-    assert_operation_present(
-        result, PullOperation, "tags", {"value_or_condition": "old_tag"}
-    )
-    assert_operation_present(result, UnsetOperation, "user.temporary_data")
-    assert_operation_present(result, IncrementOperation, "stats.visits", {"amount": 1})
-
-
-def test_increment_restrictions_without_model():
-    """Test that increment restrictions still apply without a model."""
-    update = Update()  # No model provided
-
-    # First increment is fine
-    update.increment(update.fields.counter, 5)
-
-    # Second increment on same field should be rejected
-    with pytest.raises(
-        ValueError, match="already has an increment/decrement operation"
-    ):
-        update.increment(update.fields.counter, 3)
-
-    # Decrement after increment should also be rejected
-    with pytest.raises(
-        ValueError, match="already has an increment/decrement operation"
-    ):
-        update.decrement(update.fields.counter, 2)
-
-    # But increment on different field is okay
-    update.increment(update.fields.another_counter, 10)
-
+def test_fields_proxy_push_without_model():
+    """Test push with fields proxy without a model."""
+    update = Update()
+    update.push(update.fields.items_list, "item_a")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 2  # Only the two successful increments
+    assert len(result) == 1
+    assert_operation_present(result, PushOperation, "items_list", {"items": ["item_a"]})
 
-    # Check the operations that were successfully added
-    assert_operation_present(result, IncrementOperation, "counter", {"amount": 5})
-    assert_operation_present(
-        result, IncrementOperation, "another_counter", {"amount": 10}
-    )
+def test_fields_proxy_nested_set_without_model():
+    """Test set on a nested path via fields proxy without a model."""
+    update = Update()
+    update.set(update.fields.user.profile.age, 35)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, SetOperation, "user.profile.age", {"value": 35})
+
+def test_fields_proxy_deeply_nested_push_without_model():
+    """Test push to a deeply nested path via fields proxy without a model."""
+    update = Update()
+    update.push(update.fields.blog.posts.comments.text, "A new comment")
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PushOperation, "blog.posts.comments.text", {"items": ["A new comment"]})
+
+
+# --- Test various complex operations without a model (on distinct fields) ---
+
+def test_min_operation_without_model():
+    update = Update().min("min_score_field", 0)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, MinOperation, "min_score_field", {"value": 0})
+
+def test_max_operation_without_model():
+    update = Update().max("max_score_field", 100)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, MaxOperation, "max_score_field", {"value": 100})
+
+def test_mul_operation_without_model():
+    update = Update().mul("price_multiplier", 1.5)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, MultiplyOperation, "price_multiplier", {"factor": 1.5})
+
+def test_push_dict_item_without_model():
+    update = Update().push("product_items", {"id": 101, "name": "Product A"})
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PushOperation, "product_items", {"items": [{"id": 101, "name": "Product A"}]})
+
+def test_pop_operation_without_model():
+    update = Update().pop("recent_logins", -1) # Remove first item
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "recent_logins", {"position": -1})
+
+def test_pull_operation_without_model():
+    update = Update().pull("expired_tags", "old_promo_tag")
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PullOperation, "expired_tags", {"value_or_condition": "old_promo_tag"})
+
+def test_unset_nested_operation_without_model():
+    update = Update().unset("user_profile.temporary_auth_data")
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, UnsetOperation, "user_profile.temporary_auth_data")
+
+def test_increment_nested_operation_without_model():
+    update = Update().increment("site_stats.page_visits", 1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "site_stats.page_visits", {"amount": 1})
+
+
+# --- Test increment/decrement restrictions (still apply without model) ---
+
+def test_second_increment_on_same_field_rejected_without_model():
+    """Test that a second increment on the same field is rejected."""
+    update = Update()
+    update.increment("counter_field", 5) # First is fine
+    with pytest.raises(ValueError, match=r"Field 'counter_field' already has an operation"):
+        update.increment("counter_field", 3) # Second on same field
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "counter_field", {"amount": 5})
+
+def test_decrement_after_increment_on_same_field_rejected_without_model():
+    """Test decrement after increment on same field is rejected."""
+    update = Update()
+    update.increment("value_field", 10)
+    with pytest.raises(ValueError, match=r"Field 'value_field' already has an operation"):
+        update.decrement("value_field", 2)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, IncrementOperation, "value_field", {"amount": 10})
+
+def test_increment_on_different_fields_allowed_without_model():
+    """Test increment on different fields is allowed."""
+    update = Update()
+    update.increment("counter_one", 7)
+    update.increment("counter_two", 3) # Different field
+    result = update.build()
+    assert len(result) == 2
+    assert_operation_present(result, IncrementOperation, "counter_one", {"amount": 7})
+    assert_operation_present(result, IncrementOperation, "counter_two", {"amount": 3})

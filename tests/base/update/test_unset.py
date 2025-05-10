@@ -3,110 +3,127 @@
 import pytest
 from async_repository.base.update import (
     Update,
-    UnsetOperation,  # Import specific operation class
-    InvalidPathError,  # Import specific exception
-    # ValueTypeError is not typically raised by unset
+    UnsetOperation,
+    InvalidPathError,
 )
-from tests.base.conftest import User, NestedTypes
-
-from tests.base.conftest import assert_operation_present
+from tests.base.conftest import User, NestedTypes, assert_operation_present
 from tests.conftest import Entity
 
-def test_unset_with_type_validation():
-    """Test that unset operations are validated for field existence."""
-    update = Update(User)
 
-    # Valid unset operations
+# --- Tests for `unset` with type validation (User model) ---
+
+def test_unset_valid_top_level_field_with_type_validation():
+    """Test unset on a valid top-level field is validated for existence."""
+    update = Update(User)
     update.unset("name")
-    update.unset("email")
-    update.unset("active")
-
-    # Non-existent field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):  # Corrected expected exception
-        update.unset("non_existent")
-
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 3
+    assert len(result) == 1
     assert_operation_present(result, UnsetOperation, "name")
-    assert_operation_present(result, UnsetOperation, "email")
-    assert_operation_present(result, UnsetOperation, "active")
 
-
-def test_unset_with_nested_fields():
-    """Test unset operations with nested fields."""
+def test_unset_another_valid_top_level_field_with_type_validation():
+    """Test unset on another valid top-level field."""
     update = Update(User)
-
-    # Valid nested unset
-    update.unset("metadata.key1")
-
-    # Non-existent nested field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):  # Corrected expected exception
-        update.unset("metadata.non_existent")
-
-    # Non-existent parent field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):  # Corrected expected exception
-        update.unset("non_existent.field")
-
+    update.unset("email") # email is Optional[str]
     result = update.build()
-    assert isinstance(result, list)
+    assert len(result) == 1
+    assert_operation_present(result, UnsetOperation, "email")
+
+def test_unset_non_existent_field_raises_invalid_path_error():
+    """Test unset on a non-existent field raises InvalidPathError."""
+    update = Update(User)
+    with pytest.raises(InvalidPathError):
+        update.unset("non_existent_field")
+    assert len(update.build()) == 0
+
+
+# --- Tests for `unset` with nested fields (User model) ---
+
+def test_unset_valid_nested_field():
+    """Test unset on a valid nested field."""
+    update = Update(User)
+    update.unset("metadata.key1") # metadata.key1 is str
+    result = update.build()
     assert len(result) == 1
     assert_operation_present(result, UnsetOperation, "metadata.key1")
 
+def test_unset_non_existent_nested_sub_field_raises_invalid_path_error():
+    """Test unset on a non-existent nested sub-field raises InvalidPathError."""
+    update = Update(User)
+    with pytest.raises(InvalidPathError): # metadata.non_existent_key does not exist
+        update.unset("metadata.non_existent_key")
+    assert len(update.build()) == 0
 
-def test_unset_with_complex_types():
-    """Test unset operations with complex nested structures."""
+def test_unset_non_existent_nested_parent_field_raises_invalid_path_error():
+    """Test unset where parent in path does not exist raises InvalidPathError."""
+    update = Update(User)
+    with pytest.raises(InvalidPathError): # non_existent_parent does not exist
+        update.unset("non_existent_parent.some_field")
+    assert len(update.build()) == 0
+
+
+# --- Tests for `unset` with complex types (NestedTypes model) ---
+
+def test_unset_simple_field_in_complex_type_model():
+    """Test unset on a simple field within a complex model."""
     update = Update(NestedTypes)
-
-    # Valid unset operations
-    update.unset("counter")
-    update.unset("nested.inner.val")
-
-    # Non-existent nested field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):  # Corrected expected exception
-        update.unset("nested.inner.non_existent")
-
+    update.unset("counter") # counter is int
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 2
+    assert len(result) == 1
     assert_operation_present(result, UnsetOperation, "counter")
+
+def test_unset_deeply_nested_field_in_complex_type_model():
+    """Test unset on a deeply nested field within a complex model."""
+    update = Update(NestedTypes)
+    update.unset("nested.inner.val") # nested.inner.val is int
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, UnsetOperation, "nested.inner.val")
 
+def test_unset_non_existent_deeply_nested_field_in_complex_model_raises_error():
+    """Test unset on a non-existent deeply nested field in complex model."""
+    update = Update(NestedTypes)
+    with pytest.raises(InvalidPathError): # nested.inner.non_existent_sub_field does not exist
+        update.unset("nested.inner.non_existent_sub_field")
+    assert len(update.build()) == 0
 
-def test_unset_without_model_type():
-    """Test that unset works without a model type (no validation)."""
-    update = Update()  # No model type
 
-    # These operations should work without errors
-    update.unset("any_field")
-    update.unset("nested.field")
+# --- Tests for `unset` without a model type (no validation for path) ---
 
-    # Build should succeed
+def test_unset_any_top_level_field_no_model():
+    """Test unset on any top-level field string without model type."""
+    update = Update()
+    update.unset("any_field_name")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert_operation_present(result, UnsetOperation, "any_field")
-    assert_operation_present(result, UnsetOperation, "nested.field")
+    assert len(result) == 1
+    assert_operation_present(result, UnsetOperation, "any_field_name")
 
-
-def test_unset_build_result():
-    """Test that unset operations build the correct agnostic operation list."""
-    update = Update().unset("name").unset("metadata.note")
-
+def test_unset_any_nested_field_path_no_model():
+    """Test unset on any nested field string path without model type."""
+    update = Update()
+    update.unset("some_nested.field_path")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert_operation_present(result, UnsetOperation, "name")
-    # Even if metadata.note doesn't exist in a model, unset is allowed without model
-    assert_operation_present(result, UnsetOperation, "metadata.note")
+    assert len(result) == 1
+    assert_operation_present(result, UnsetOperation, "some_nested.field_path")
 
+
+# --- Test `unset` build result for multiple distinct fields ---
+
+def test_unset_build_result_multiple_distinct_fields():
+    """Test that unset operations on distinct fields build correctly."""
+    update = Update().unset("user_name").unset("user_profile.settings.theme")
+    result = update.build()
+    assert len(result) == 2
+    assert_operation_present(result, UnsetOperation, "user_name")
+    assert_operation_present(result, UnsetOperation, "user_profile.settings.theme")
+
+
+# --- Test `unset` with DSL-like path (Entity model) ---
 
 def test_update_dsl_nested_unset():
-    """Test unset operation on nested fields."""
-    # Create an update with unset operation on nested path
-    update = Update(Entity).unset("metadata.settings.notifications")
-
-    # Assert the operation was added correctly
-    assert len(update._operations) == 1
-    assert isinstance(update._operations[0], UnsetOperation)
-    assert update._operations[0].field_path == "metadata.settings.notifications"
+    """Test unset operation on nested fields using string path with Entity model."""
+    update = Update(Entity).unset("metadata.settings.notifications_enabled")
+    result = update.build() # Get operations list from build()
+    assert len(result) == 1
+    operation = result[0]
+    assert isinstance(operation, UnsetOperation)
+    assert operation.field_path == "metadata.settings.notifications_enabled"

@@ -3,206 +3,241 @@
 import pytest
 from async_repository.base.update import (
     Update,
-    PopOperation,  # Import specific operation class
-    InvalidPathError,  # Import specific exception
-    # ValueTypeError is not typically raised by pop itself, but InvalidPathError is
+    PopOperation,
+    InvalidPathError,
 )
-from tests.base.conftest import User, NestedTypes, Organization, find_operations
-
-from tests.base.conftest import assert_operation_present
+from tests.base.conftest import User, NestedTypes, Organization, assert_operation_present
 from tests.conftest import Entity
 
 
-def test_pop_with_type_validation():
-    """Test that pop operations are type validated."""
+# --- Tests for `pop` with type validation (User model) ---
+
+def test_pop_default_direction_with_type_validation():
+    """Test pop with default direction (1 - last element) is validated."""
     update = Update(User)
-
-    # Add some valid operations first to check later
-    update.pop("tags")  # Default direction (1 - last element)
-    update.pop("tags", 1)  # Last element explicitly
-    update.pop("tags", -1)  # First element
-
-    # Invalid field (not a list) - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):
-        update.pop("name")  # name is str, not a list
-
-    # Non-existent field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):
-        update.pop("non_existent")
-
-    # Invalid direction - Method raises ValueError
-    with pytest.raises(ValueError):
-        update.pop("tags", 2)  # direction must be 1 or -1
-
-    with pytest.raises(ValueError):
-        update.pop("tags", 0)
-
-    with pytest.raises(ValueError):
-        update.pop("tags", -2)
-
-    # Check the valid operations were added
+    update.pop("tags")
     result = update.build()
-    assert isinstance(result, list)
-    pop_ops = find_operations(result, PopOperation, "tags")
-    assert len(pop_ops) == 3
-    assert pop_ops[0].position == 1  # Default
-    assert pop_ops[1].position == 1  # Explicit last
-    assert pop_ops[2].position == -1  # Explicit first
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "tags", {"position": 1})
 
-
-def test_pop_with_nested_fields():
-    """Test pop operations with nested list fields."""
+def test_pop_explicit_last_direction_with_type_validation():
+    """Test pop with explicit last element direction (1) is validated."""
     update = Update(User)
+    update.pop("tags", 1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "tags", {"position": 1})
 
-    # Valid nested pop
-    update.pop("addresses")  # Pop from a list field (addresses) which contains objects
+def test_pop_explicit_first_direction_with_type_validation():
+    """Test pop with explicit first element direction (-1) is validated."""
+    update = Update(User)
+    update.pop("tags", -1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "tags", {"position": -1})
 
-    # Invalid nested field (not a list) - Validator raises InvalidPathError
+def test_pop_invalid_field_type_non_list_raises_invalid_path_error():
+    """Test pop on a non-list field raises InvalidPathError."""
+    update = Update(User)
     with pytest.raises(InvalidPathError):
-        update.pop("metadata.key1")  # key1 is str, not a list
+        update.pop("name") # name is str, not a list
+    assert len(update.build()) == 0
 
-    # Non-existent nested field - Validator raises InvalidPathError
+def test_pop_non_existent_field_raises_invalid_path_error():
+    """Test pop on a non-existent field raises InvalidPathError."""
+    update = Update(User)
     with pytest.raises(InvalidPathError):
-        update.pop("metadata.non_existent")
+        update.pop("non_existent_field")
+    assert len(update.build()) == 0
 
+@pytest.mark.parametrize("invalid_direction", [2, 0, -2, "1"])
+def test_pop_invalid_direction_raises_value_error(invalid_direction):
+    """Test pop with an invalid direction raises ValueError."""
+    update = Update(User)
+    with pytest.raises(ValueError): # Direction must be 1 or -1
+        update.pop("tags", invalid_direction)
+    assert len(update.build()) == 0
+
+
+# --- Tests for `pop` with nested fields (User and NestedTypes models) ---
+
+def test_pop_from_nested_list_of_objects():
+    """Test pop from a nested list field containing objects."""
+    update = Update(User)
+    update.pop("addresses") # addresses is List[Address]
     result = update.build()
     assert len(result) == 1
     assert_operation_present(result, PopOperation, "addresses", {"position": 1})
 
+def test_pop_from_nested_non_list_field_raises_invalid_path_error():
+    """Test pop from a nested non-list field raises InvalidPathError."""
+    update = Update(User)
+    with pytest.raises(InvalidPathError):
+        update.pop("metadata.key1") # key1 is str, not a list
+    assert len(update.build()) == 0
 
-def test_pop_with_complex_types():
-    """Test pop operations with complex list types."""
+def test_pop_from_non_existent_nested_field_raises_invalid_path_error():
+    """Test pop from a non-existent nested field raises InvalidPathError."""
+    update = Update(User)
+    with pytest.raises(InvalidPathError):
+        update.pop("metadata.non_existent_key")
+    assert len(update.build()) == 0
+
+
+# --- Tests for `pop` with complex list types (NestedTypes model) ---
+
+def test_pop_from_list_of_int():
+    """Test pop from a List[int]."""
     update = Update(NestedTypes)
-
-    # Valid pop from different list types
-    update.pop("simple_list")  # List[int]
-    update.pop("str_list")  # List[str]
-    update.pop("complex_list")  # List[ComplexItem]
-
-    # Invalid pop from non-list field - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):
-        update.pop("counter")  # counter is an int
-
-    with pytest.raises(InvalidPathError):
-        update.pop("dict_field")  # dict_field is a dict
-
+    update.pop("simple_list")
     result = update.build()
-    assert len(result) == 3
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "simple_list", {"position": 1})
+
+def test_pop_from_list_of_str():
+    """Test pop from a List[str]."""
+    update = Update(NestedTypes)
+    update.pop("str_list")
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "str_list", {"position": 1})
+
+def test_pop_from_list_of_complex_item():
+    """Test pop from a List[ComplexItem]."""
+    update = Update(NestedTypes)
+    update.pop("complex_list")
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "complex_list", {"position": 1})
 
+def test_pop_from_non_list_field_in_complex_model_raises_invalid_path_error():
+    """Test pop from non-list field (int) in NestedTypes raises InvalidPathError."""
+    update = Update(NestedTypes)
+    with pytest.raises(InvalidPathError):
+        update.pop("counter") # counter is an int
+    assert len(update.build()) == 0
 
-def test_pop_without_model_type():
-    """Test that pop works without a model type (no validation)."""
-    update = Update()  # No model type
+def test_pop_from_dict_field_in_complex_model_raises_invalid_path_error():
+    """Test pop from dict field in NestedTypes raises InvalidPathError."""
+    update = Update(NestedTypes)
+    with pytest.raises(InvalidPathError):
+        update.pop("dict_field") # dict_field is a dict
+    assert len(update.build()) == 0
 
-    # These operations should work without errors
-    update.pop("tags")  # pos=1
-    update.pop("numbers", 1)  # pos=1
-    update.pop("nested.list", -1)  # pos=-1
 
-    # Build should succeed
+# --- Tests for `pop` without a model type (no validation) ---
+
+def test_pop_default_direction_no_model():
+    """Test pop with default direction without model type validation."""
+    update = Update()
+    update.pop("tags")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 3
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "tags", {"position": 1})
+
+def test_pop_explicit_last_direction_no_model():
+    """Test pop with explicit last direction without model type validation."""
+    update = Update()
+    update.pop("numbers", 1)
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "numbers", {"position": 1})
+
+def test_pop_explicit_first_direction_no_model():
+    """Test pop with explicit first direction on nested path without model type."""
+    update = Update()
+    update.pop("nested.list", -1)
+    result = update.build()
+    assert len(result) == 1
     assert_operation_present(result, PopOperation, "nested.list", {"position": -1})
 
 
-def test_pop_build_result():
-    """Test that pop operations build the correct agnostic operation list."""
-    update = Update().pop("tags").pop("items", -1)  # pos=1, pos=-1
+# --- Test `pop` build result ---
 
+def test_pop_build_result_with_distinct_fields():
+    """Test that pop operations on distinct fields build correctly."""
+    update = Update().pop("tags").pop("items", -1) # Different fields
     result = update.build()
-    assert isinstance(result, list)
     assert len(result) == 2
     assert_operation_present(result, PopOperation, "tags", {"position": 1})
     assert_operation_present(result, PopOperation, "items", {"position": -1})
 
 
-def test_pop_from_nested_list():
-    """Test popping from lists within nested objects."""
+# --- Tests for `pop` from deeply nested lists (Organization model) ---
 
+def test_pop_from_deeply_nested_list_default_pos():
+    """Test pop (default pos) from a list within a nested object array."""
     update = Update(Organization)
-
-    # Pop from a list within a nested object
-    update.pop("departments.0.members")  # pos=1
-    update.pop("departments.0.members", -1)  # pos=-1
-
-    # Pop from a deeply nested list
-    update.pop("departments.0.categories.0.items", 1)  # pos=1
-    update.pop("departments.0.categories.0.tags")  # pos=1
-    update.pop("departments.0.categories.0.counts", -1)  # pos=-1
-
-    # Invalid field (not a list) - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):
-        update.pop("departments.0.name")  # name is a string
-
-    # Invalid nested path - Validator raises InvalidPathError
-    with pytest.raises(InvalidPathError):
-        update.pop("departments.0.categories.0.non_existent")
-
-    # Invalid direction - Method raises ValueError
-    with pytest.raises(ValueError):
-        update.pop("departments.0.categories.0.items", 2)
-
-    # Build and check the result
+    update.pop("departments.0.members")
     result = update.build()
-    assert isinstance(result, list)
-    assert len(result) == 5  # 2 for members, 3 for categories
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "departments.0.members", {"position": 1})
 
-    # Check specific operations - order matters here
-    assert (
-        isinstance(result[0], PopOperation)
-        and result[0].field_path == "departments.0.members"
-        and result[0].position == 1
-    )
-    assert (
-        isinstance(result[1], PopOperation)
-        and result[1].field_path == "departments.0.members"
-        and result[1].position == -1
-    )
-    assert (
-        isinstance(result[2], PopOperation)
-        and result[2].field_path == "departments.0.categories.0.items"
-        and result[2].position == 1
-    )
-    assert (
-        isinstance(result[3], PopOperation)
-        and result[3].field_path == "departments.0.categories.0.tags"
-        and result[3].position == 1
-    )
-    assert (
-        isinstance(result[4], PopOperation)
-        and result[4].field_path == "departments.0.categories.0.counts"
-        and result[4].position == -1
-    )
+def test_pop_from_deeply_nested_list_first_pos():
+    """Test pop (first pos) from a list within a nested object array."""
+    update = Update(Organization)
+    update.pop("departments.0.members", -1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "departments.0.members", {"position": -1})
 
-    # Use helper to find the *last* operation if needed, or all operations
-    members_ops = find_operations(result, PopOperation, "departments.0.members")
-    assert len(members_ops) == 2
-    assert members_ops[0].position == 1
-    assert members_ops[1].position == -1
-    assert_operation_present(
-        result, PopOperation, "departments.0.categories.0.items", {"position": 1}
-    )
-    assert_operation_present(
-        result, PopOperation, "departments.0.categories.0.tags", {"position": 1}
-    )
-    assert_operation_present(
-        result, PopOperation, "departments.0.categories.0.counts", {"position": -1}
-    )
 
+def test_pop_from_very_deeply_nested_list_explicit_last_pos():
+    """Test pop (explicit last pos) from a very deeply nested list."""
+    update = Update(Organization)
+    update.pop("departments.0.categories.0.items", 1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "departments.0.categories.0.items", {"position": 1})
+
+def test_pop_from_very_deeply_nested_list_default_pos():
+    """Test pop (default pos) from another very deeply nested list."""
+    update = Update(Organization)
+    update.pop("departments.0.categories.0.tags")
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "departments.0.categories.0.tags", {"position": 1})
+
+def test_pop_from_very_deeply_nested_list_first_pos():
+    """Test pop (first pos) from yet another very deeply nested list."""
+    update = Update(Organization)
+    update.pop("departments.0.categories.0.counts", -1)
+    result = update.build()
+    assert len(result) == 1
+    assert_operation_present(result, PopOperation, "departments.0.categories.0.counts", {"position": -1})
+
+
+def test_pop_from_deeply_nested_non_list_field_raises_invalid_path_error():
+    """Test pop from a deeply nested non-list field raises InvalidPathError."""
+    update = Update(Organization)
+    with pytest.raises(InvalidPathError):
+        update.pop("departments.0.name") # name is a string
+    assert len(update.build()) == 0
+
+def test_pop_from_non_existent_deeply_nested_path_raises_invalid_path_error():
+    """Test pop from a non-existent deeply nested path raises InvalidPathError."""
+    update = Update(Organization)
+    with pytest.raises(InvalidPathError):
+        update.pop("departments.0.categories.0.non_existent_list")
+    assert len(update.build()) == 0
+
+@pytest.mark.parametrize("invalid_direction", [2, 0, "1"])
+def test_pop_from_deeply_nested_list_invalid_direction_raises_value_error(invalid_direction):
+    """Test pop from a deeply nested list with invalid direction raises ValueError."""
+    update = Update(Organization)
+    with pytest.raises(ValueError):
+        update.pop("departments.0.categories.0.items", invalid_direction)
+    assert len(update.build()) == 0
+
+
+# --- Test `pop` with DSL-like path ---
 
 def test_update_dsl_nested_pop():
-    """Test pop operation on nested array fields."""
-    # Create an update with pop operation on nested path
+    """Test pop operation on nested array fields using string path."""
     update = Update(Entity).pop("metadata.collections.items", 1)  # Pop from end
-
-    # Assert the operation was added correctly
-    assert len(update._operations) == 1
-    assert isinstance(update._operations[0], PopOperation)
-    assert update._operations[0].field_path == "metadata.collections.items"
-    assert update._operations[0].position == 1
+    result = update.build()
+    assert len(result) == 1
+    operation = result[0]
+    assert isinstance(operation, PopOperation)
+    assert operation.field_path == "metadata.collections.items"
+    assert operation.position == 1
