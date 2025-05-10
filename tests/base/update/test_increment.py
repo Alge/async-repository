@@ -7,6 +7,7 @@ from async_repository.base.update import (
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
 )
+from tests.conftest import Entity
 from tests.base.conftest import User, NumericModel, NestedTypes
 from tests.base.conftest import assert_operation_present
 
@@ -205,3 +206,15 @@ def test_increment_float_precision():
     assert len(result) == 2
     assert_operation_present(result, IncrementOperation, "value1", {"amount": 0.1})
     assert_operation_present(result, IncrementOperation, "value2", {"amount": 0.2})
+
+
+def test_update_dsl_nested_increment():
+    """Test increment operation on nested numeric fields."""
+    # Create an update with increment operation on nested path
+    update = Update(Entity).increment("metadata.stats.visits", 5)
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], IncrementOperation)
+    assert update._operations[0].field_path == "metadata.stats.visits"
+    assert update._operations[0].amount == 5

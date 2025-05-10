@@ -5,8 +5,9 @@ from async_repository.base.update import (
     Update,
     MultiplyOperation,  # Import specific operation class
     InvalidPathError,  # Import specific exception
-    ValueTypeError,  # Import specific exception
+    ValueTypeError, MinOperation,  # Import specific exception
 )
+from tests.conftest import Entity
 from tests.base.conftest import User, NumericModel, NestedTypes
 
 from tests.base.conftest import assert_operation_present
@@ -103,3 +104,15 @@ def test_mul_edge_cases():
     assert_operation_present(result, MultiplyOperation, "field2", {"factor": -1})
     assert_operation_present(result, MultiplyOperation, "field3", {"factor": 0.001})
     assert_operation_present(result, MultiplyOperation, "field4", {"factor": 1000})
+
+
+def test_update_dsl_nested_multiply():
+    """Test multiply operation on nested numeric fields."""
+    # Create an update with multiply operation on nested path
+    update = Update(Entity).mul("metadata.rates.base", 2)
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], MultiplyOperation)
+    assert update._operations[0].field_path == "metadata.rates.base"
+    assert update._operations[0].factor == 2

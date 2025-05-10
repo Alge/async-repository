@@ -11,6 +11,8 @@ from tests.base.conftest import User, NumericModel, NestedTypes
 
 from tests.base.conftest import assert_operation_present
 
+from tests.conftest import Entity
+
 
 def test_max_basic():
     """Test basic max operation functionality builds the correct operation."""
@@ -105,3 +107,15 @@ def test_max_edge_cases():
     assert_operation_present(result, MaxOperation, "field1", {"value": -10})
     assert_operation_present(result, MaxOperation, "field2", {"value": 0})
     assert_operation_present(result, MaxOperation, "field3", {"value": 1e9})
+
+
+def test_update_dsl_nested_max():
+    """Test max operation on nested numeric fields."""
+    # Create an update with max operation on nested path
+    update = Update(Entity).max("metadata.limits.ceiling", 100)
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], MaxOperation)
+    assert update._operations[0].field_path == "metadata.limits.ceiling"
+    assert update._operations[0].value == 100

@@ -7,6 +7,7 @@ from async_repository.base.update import (
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
 )
+from tests.conftest import Entity
 from tests.base.conftest import User, NumericModel, NestedTypes
 
 from tests.base.conftest import assert_operation_present
@@ -104,3 +105,15 @@ def test_min_edge_cases():
     assert_operation_present(result, MinOperation, "field1", {"value": -100})
     assert_operation_present(result, MinOperation, "field2", {"value": 0})
     assert_operation_present(result, MinOperation, "field3", {"value": 0.0001})
+
+
+def test_update_dsl_nested_min():
+    """Test min operation on nested numeric fields."""
+    # Create an update with min operation on nested path
+    update = Update(Entity).min("metadata.limits.floor", 30)
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], MinOperation)
+    assert update._operations[0].field_path == "metadata.limits.floor"
+    assert update._operations[0].value == 30

@@ -7,6 +7,7 @@ from async_repository.base.update import (
     InvalidPathError,  # Import specific exception
     ValueTypeError,  # Import specific exception
 )
+from tests.conftest import Entity
 from tests.base.conftest import (
     User,
     NestedTypes,
@@ -206,3 +207,15 @@ def test_push_to_nested_list():
     assert_operation_present(
         result, PushOperation, "departments.0.categories.0.counts", {"items": [42]}
     )
+
+
+def test_update_dsl_nested_push():
+    """Test push operation on nested array fields."""
+    # Create an update with push operation on nested path
+    update = Update(Entity).push("metadata.collections.tags", "new")
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], PushOperation)
+    assert update._operations[0].field_path == "metadata.collections.tags"
+    assert "new" in update._operations[0].items

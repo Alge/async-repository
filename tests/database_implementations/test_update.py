@@ -1,35 +1,29 @@
 # tests/database_implementations/test_update.py
 
-from datetime import datetime, timezone # Added timezone
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import AnyHttpUrl, BaseModel, Field
 
 from async_repository.base.exceptions import ObjectNotFoundException
-# Import QueryBuilder to construct options where needed
 from async_repository.base.query import QueryBuilder, QueryOptions
 from async_repository.base.update import Update
-from tests.conftest import Entity  # Use Entity from conftest
+from tests.conftest import Entity
 
 
-# Use the initialized_repository fixture for tests needing a ready DB
 pytestmark = pytest.mark.usefixtures("initialized_repository")
 
 
-# =============================================================================
-# Tests for update_one method (using Update builder)
-# =============================================================================
-
+# Basic CRUD operations with Update
 async def test_update_set_fields(initialized_repository, test_entity, logger):
-    """Test updating fields using set."""
-    repo = initialized_repository # Use the initialized repo
+    """Test updating fields using set operation."""
+    repo = initialized_repository
     await repo.store(test_entity, logger)
 
     new_name = "Updated Name"
     new_value = 200
-    now = datetime.now(timezone.utc) # Use timezone-aware datetime
+    now = datetime.now(timezone.utc)
 
-    # Use QueryBuilder for options
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == test_entity.id).build()
     update = Update(Entity).set("name", new_name).set("value", new_value).set("updated_at", now)
@@ -40,13 +34,11 @@ async def test_update_set_fields(initialized_repository, test_entity, logger):
     assert updated.name == new_name
     assert updated.value == new_value
     assert updated.updated_at is not None
-    # Compare timestamps carefully (allow for slight difference)
-    time_diff = abs((updated.updated_at - now).total_seconds())
-    assert time_diff < 1.0
+    assert abs((updated.updated_at - now).total_seconds()) < 1.0
 
 
-async def test_update_non_existent(initialized_repository, test_entity, logger):
-    """Test updating a non-existent entity raises ObjectNotFoundException."""
+async def test_update_non_existent(initialized_repository, logger):
+    """Test updating a non-existent entity raises exception."""
     repo = initialized_repository
     non_existent_id = "non-existent-id"
 
@@ -59,7 +51,7 @@ async def test_update_non_existent(initialized_repository, test_entity, logger):
 
 
 async def test_update_return_value(initialized_repository, test_entity, logger):
-    """Test update_one return value."""
+    """Test update_one return value behavior."""
     repo = initialized_repository
     await repo.store(test_entity, logger)
 
@@ -80,22 +72,21 @@ async def test_update_return_value(initialized_repository, test_entity, logger):
     )
     assert result_none is None
 
-    # Verify the second update still happened
-    final = await repo.get(test_entity.id, logger)
-    assert final.value == 400
+    # Verify update still happened
+    updated = await repo.get(test_entity.id, logger)
+    assert updated.value == 400
 
 
 async def test_update_one_with_complex_expression(initialized_repository, logger):
-    """Test update_one with QueryBuilder expression."""
+    """Test update_one with complex query expressions."""
     repo = initialized_repository
     e1 = Entity(name="Alice", value=100, active=True)
     e2 = Entity(name="Bob", value=200, active=True)
-    e3 = Entity(name="Alice", value=300, active=False) # Should not be updated
+    e3 = Entity(name="Alice", value=300, active=False)
     for e in [e1, e2, e3]:
         await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
-    # Find active Alice
     options = qb.filter((qb.fields.active == True) & (qb.fields.name == "Alice")).build()
     update = Update(Entity).set("value", 150)
 
@@ -110,11 +101,7 @@ async def test_update_one_with_complex_expression(initialized_repository, logger
     assert inactive_alice.value == 300
 
 
-# =============================================================================
-# Tests for update_many method (using Update builder)
-# =============================================================================
-
-
+# Update Many Tests
 @pytest.mark.asyncio
 async def test_update_many_simple(initialized_repository, logger):
     """Test updating multiple entities with update_many."""
@@ -127,42 +114,30 @@ async def test_update_many_simple(initialized_repository, logger):
     for e in entities:
         await repo.store(e, logger)
 
-    # --- Query/Update for 'Target' entities ---
-    qb_target = QueryBuilder(Entity) # Use a specific builder instance
+    qb_target = QueryBuilder(Entity)
     options_target = qb_target.filter(qb_target.fields.name == "Target").build()
     update = Update(Entity).set("active", True)
 
     update_count = await repo.update_many(options_target, update, logger)
     assert update_count == 2
 
-    # Verify changes using the same options object
+    # Verify changes
     listed = [item async for item in repo.list(logger, options_target)]
     assert len(listed) == 2
     assert all(item.active is True for item in listed)
 
-    # --- Query for 'Other' entity ---
-    qb_other = QueryBuilder(Entity) # Create a NEW builder instance
+    # Verify other entity wasn't updated
+    qb_other = QueryBuilder(Entity)
     options_other = qb_other.filter(qb_other.fields.name == "Other").build()
-    other_entity = await repo.find_one(logger, options_other) # Should now find the entity
+    other_entity = await repo.find_one(logger, options_other)
 
     assert other_entity is not None
     assert other_entity.name == "Other"
-    assert other_entity.active is False # Verify it wasn't updated
-
-# Note: update_many with limit/offset is tricky and behaviour differs between DBs.
-# SQLite/Postgres typically ignore limit/offset in UPDATE statements.
-# MongoDB's update_many also ignores them.
-# The previous tests for limit/offset might have relied on non-standard behaviour
-# or the complex find-ids-then-update logic which was removed for MongoDB/SQLite.
-# We will skip testing limit/offset with update_many for now, as it's generally
-# not a reliable cross-database feature for the UPDATE command itself.
-# If specific limited updates are needed, usually a fetch-then-update loop is used.
-# async def test_update_many_with_limit(...): pytest.skip(...)
-# async def test_update_many_with_offset(...): pytest.skip(...)
+    assert other_entity.active is False
 
 
 async def test_update_many_with_complex_expression(initialized_repository, logger):
-    """Test update_many with a complex expression."""
+    """Test update_many with complex query expressions."""
     repo = initialized_repository
     entities = [
         Entity(name="Alice", value=100, active=True, owner="A", updated_at=None),
@@ -175,7 +150,6 @@ async def test_update_many_with_complex_expression(initialized_repository, logge
         await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
-    # Update if (active=True AND owner="B") OR value > 200
     expr = ((qb.fields.active == True) & (qb.fields.owner == "B")) | (qb.fields.value > 200)
     options = qb.filter(expr).build()
 
@@ -191,8 +165,8 @@ async def test_update_many_with_complex_expression(initialized_repository, logge
     assert all_entities["Bob"].value == 1000
     assert all_entities["Dave"].value == 1000
     assert all_entities["Eve"].value == 1000
-    assert all_entities["Alice"].value == 100 # Unchanged
-    assert all_entities["Charlie"].value == 150 # Unchanged
+    assert all_entities["Alice"].value == 100
+    assert all_entities["Charlie"].value == 150
 
     assert all_entities["Bob"].updated_at is not None
     assert all_entities["Dave"].updated_at is not None
@@ -202,10 +176,11 @@ async def test_update_many_with_complex_expression(initialized_repository, logge
 
 
 async def test_update_many_with_no_matches(initialized_repository, logger):
-    """Test update_many when no entities match."""
+    """Test update_many when no entities match the query."""
     repo = initialized_repository
     entities = [Entity(name="Alice"), Entity(name="Bob")]
-    for e in entities: await repo.store(e, logger)
+    for e in entities:
+        await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.name == "NonExistent").build()
@@ -214,27 +189,24 @@ async def test_update_many_with_no_matches(initialized_repository, logger):
     update_count = await repo.update_many(options, update, logger)
     assert update_count == 0
 
-    # Verify active status didn't change
+    # Verify entities were not changed
     async for entity in repo.list(logger):
         assert entity.active is True
 
 
 async def test_update_many_requires_expression(initialized_repository, logger):
-    """Test update_many raises ValueError if no expression is provided."""
+    """Test update_many raises when no query expression is provided."""
     repo = initialized_repository
-    await repo.store(Entity(), logger) # Store one entity
+    await repo.store(Entity(), logger)
 
-    options = QueryOptions() # No expression
+    options = QueryOptions()
     update = Update(Entity).set("active", False)
 
     with pytest.raises(ValueError, match="must include an 'expression'"):
         await repo.update_many(options, update, logger)
 
 
-# =============================================================================
-# Tests for Upsert Method (Kept from previous file)
-# =============================================================================
-
+# Upsert Tests
 async def test_upsert_inserts_new_entity(initialized_repository, logger):
     """Test upsert inserts a new entity."""
     repo = initialized_repository
@@ -249,23 +221,20 @@ async def test_upsert_updates_existing_entity(initialized_repository, logger):
     """Test upsert updates an existing entity."""
     repo = initialized_repository
     entity = Entity(name="Upsert Update", value=100)
-    await repo.store(entity, logger) # Store first
+    await repo.store(entity, logger)
 
-    entity.name = "Upsert Updated" # Modify
+    entity.name = "Upsert Updated"
     entity.value = 250
-    await repo.upsert(entity, logger) # Upsert modified
+    await repo.upsert(entity, logger)
 
     retrieved = await repo.get(entity.id, logger)
     assert retrieved.name == "Upsert Updated"
     assert retrieved.value == 250
 
 
-# =============================================================================
-# Tests for push, pop, unset, pull, inc, dec, min, max, mul operations
-# =============================================================================
-
+# Array Operation Tests
 async def test_update_push_operation(initialized_repository, logger):
-    """Test push operation: append an item to a list field."""
+    """Test push operation on an array field."""
     repo = initialized_repository
     e = Entity(name="PushTest", tags=["initial"])
     await repo.store(e, logger)
@@ -280,7 +249,7 @@ async def test_update_push_operation(initialized_repository, logger):
 
 
 async def test_update_pop_operation(initialized_repository, logger):
-    """Test pop operation: remove last (-1: first) element."""
+    """Test pop operation on an array field."""
     repo = initialized_repository
     e = Entity(name="PopTest", tags=["a", "b", "c"])
     await repo.store(e, logger)
@@ -301,54 +270,50 @@ async def test_update_pop_operation(initialized_repository, logger):
     assert updated.tags == ["b"]
 
 
-async def test_update_unset_operation(initialized_repository, logger):
-    """Test unset operation: remove a field or set to default."""
-    # Note: Behavior might differ. SQL might set to NULL, Mongo removes field.
-    # Test assumes field removal or setting to None if optional.
-    repo = initialized_repository
-    e = Entity(name="UnsetTest", metadata={"note": "important", "extra": 1}, owner="owner1")
-    await repo.store(e, logger)
-
-    qb = QueryBuilder(Entity)
-    options = qb.filter(qb.fields.id == e.id).build()
-    # Unset an optional field and a field within metadata
-    update = Update(Entity).unset("owner").unset("metadata.note")
-
-    await repo.update_one(options, update, logger)
-    updated = await repo.get(e.id, logger)
-
-    assert updated.owner is None
-    assert updated.metadata is not None # Metadata dict itself shouldn't be removed
-    assert "note" not in updated.metadata # Key 'note' should be gone
-    assert updated.metadata.get("extra") == 1 # Other keys remain
-
-
 async def test_update_pull_operation(initialized_repository, logger):
-    """Test pull operation: remove a specific item from a list."""
+    """Test pull operation on an array field."""
     repo = initialized_repository
     e = Entity(name="PullTest", tags=["x", "y", "z", "y"])
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    # Pull all occurrences of "y"
     update = Update(Entity).pull("tags", "y")
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
-
     assert updated.tags == ["x", "z"]
 
 
+async def test_update_unset_operation(initialized_repository, logger):
+    """Test unset operation on fields."""
+    repo = initialized_repository
+    e = Entity(name="UnsetTest", metadata={"note": "important", "extra": 1}, owner="owner1")
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).unset("owner").unset("metadata.note")
+
+    await repo.update_one(options, update, logger)
+    updated = await repo.get(e.id, logger)
+
+    assert updated.owner is None
+    assert updated.metadata is not None
+    assert "note" not in updated.metadata
+    assert updated.metadata.get("extra") == 1
+
+
+# Numeric Operation Tests
 async def test_update_increment_operation(initialized_repository, logger):
-    """Test increment operation."""
+    """Test increment operation on numeric fields."""
     repo = initialized_repository
     e = Entity(name="IncTest", value=100)
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).increment("value", 10) # Increment by 10
+    update = Update(Entity).increment("value", 10)
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
@@ -362,14 +327,14 @@ async def test_update_increment_operation(initialized_repository, logger):
 
 
 async def test_update_decrement_operation(initialized_repository, logger):
-    """Test decrement operation."""
+    """Test decrement operation on numeric fields."""
     repo = initialized_repository
     e = Entity(name="DecTest", value=50)
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).decrement("value", 5) # Decrement by 5
+    update = Update(Entity).decrement("value", 5)
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
@@ -383,7 +348,7 @@ async def test_update_decrement_operation(initialized_repository, logger):
 
 
 async def test_update_min_operation(initialized_repository, logger):
-    """Test min operation."""
+    """Test min operation on numeric fields."""
     repo = initialized_repository
     e = Entity(name="MinTest", value=100)
     await repo.store(e, logger)
@@ -395,17 +360,17 @@ async def test_update_min_operation(initialized_repository, logger):
     update_lower = Update(Entity).min("value", 50)
     await repo.update_one(options, update_lower, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 50 # Should update to 50
+    assert updated.value == 50
 
     # Update with value higher than current
     update_higher = Update(Entity).min("value", 75)
     await repo.update_one(options, update_higher, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 50 # Should remain 50
+    assert updated.value == 50
 
 
 async def test_update_max_operation(initialized_repository, logger):
-    """Test max operation."""
+    """Test max operation on numeric fields."""
     repo = initialized_repository
     e = Entity(name="MaxTest", value=100)
     await repo.store(e, logger)
@@ -417,61 +382,54 @@ async def test_update_max_operation(initialized_repository, logger):
     update_higher = Update(Entity).max("value", 150)
     await repo.update_one(options, update_higher, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 150 # Should update to 150
+    assert updated.value == 150
 
     # Update with value lower than current
     update_lower = Update(Entity).max("value", 120)
     await repo.update_one(options, update_lower, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 150 # Should remain 150
+    assert updated.value == 150
 
 
 async def test_update_multiply_operation_int(initialized_repository, logger):
-    """Test multiply operation."""
+    """Test multiply operation on integer fields."""
     repo = initialized_repository
     e = Entity(name="MulTest", value=10)
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).mul("value", 4) # Multiply by 2.5
+    update = Update(Entity).mul("value", 4)
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
-    assert updated.value == 40 # 10 * 4
+    assert updated.value == 40
 
 
 async def test_update_multiply_operation_float(initialized_repository, logger):
-    """Test multiply operation on a float field."""  # Updated docstring slightly
+    """Test multiply operation on float fields."""
     repo = initialized_repository
-    # Initialize with float_value, value will have its default (e.g., 100)
-    e = Entity(name="MulTest", float_value=10.0, value=999)  # Set value distinct
+    e = Entity(name="MulTest", float_value=10.0, value=999)
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).mul("float_value", 2.5)  # Multiply float_value by 2.5
+    update = Update(Entity).mul("float_value", 2.5)
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
-    logger.info("Updated entity: %s", updated)
-
-    assert updated.float_value == 25.0  # 10.0 * 2.5
+    assert updated.float_value == 25.0
 
 
-# =============================================================================
-# Nested Update Tests (Using Update builder)
-# =============================================================================
-
+# Nested Path Tests
 async def test_update_nested_push_operation(initialized_repository, logger):
-    """Test push operation on a nested list field."""
+    """Test push operation on a nested array field."""
     repo = initialized_repository
     e = Entity(name="NestedPushTest", profile={"emails": ["initial@example.com"], "settings": {}})
     await repo.store(e, logger)
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    # Use dot notation with Update builder
     update = Update(Entity).push("profile.emails", "new@example.com")
 
     await repo.update_one(options, update, logger)
@@ -481,7 +439,7 @@ async def test_update_nested_push_operation(initialized_repository, logger):
 
 
 async def test_update_nested_pop_operation(initialized_repository, logger):
-    """Test pop operation on a nested list field."""
+    """Test pop operation on a nested array field."""
     repo = initialized_repository
     initial_emails = ["a@example.com", "b@example.com", "c@example.com"]
     e = Entity(name="NestedPopTest", profile={"emails": initial_emails.copy()})
@@ -515,18 +473,18 @@ async def test_update_nested_unset_operation(initialized_repository, logger):
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
-    update = Update(Entity).unset("profile.phone") # Unset phone inside profile
+    update = Update(Entity).unset("profile.phone")
 
     await repo.update_one(options, update, logger)
     updated = await repo.get(e.id, logger)
 
     assert "phone" not in updated.profile
-    assert "emails" in updated.profile # Other nested fields remain
-    assert updated.metadata == {"keep": "this"} # Other top-level fields remain
+    assert "emails" in updated.profile
+    assert updated.metadata == {"keep": "this"}
 
 
 async def test_update_nested_pull_operation(initialized_repository, logger):
-    """Test pull operation on a nested list field."""
+    """Test pull operation on a nested array field."""
     repo = initialized_repository
     e = Entity(
         name="NestedPullTest",
@@ -544,11 +502,170 @@ async def test_update_nested_pull_operation(initialized_repository, logger):
     assert updated.profile["emails"] == ["x@example.com", "z@example.com"]
 
 
-# =============================================================================
-# Test updating with Pydantic Model Field (Copied from test_update.py)
-# =============================================================================
-async def test_update_with_pydantic_model_field_agnostic(initialized_repository, logger):
-    """Test updating metadata with a Pydantic model (agnostic)."""
+async def test_update_nested_increment(initialized_repository, logger):
+    """Test increment operation on a nested numeric field."""
+
+    repo = initialized_repository
+    e = Entity(name="NestedIncrementTest")
+    e.metadata = {"stats": {"visits": 10, "actions": 5}}
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).increment("metadata.stats.visits", 3)
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["stats"]["visits"] == 13
+    assert updated.metadata["stats"]["actions"] == 5
+
+
+async def test_update_nested_decrement(initialized_repository, logger):
+    """Test decrement operation on a nested numeric field."""
+
+    repo = initialized_repository
+    e = Entity(name="NestedDecrementTest")
+    e.metadata = {"stats": {"clicks": 20, "impressions": 100}}
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).decrement("metadata.stats.clicks", 5)
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["stats"]["clicks"] == 15
+    assert updated.metadata["stats"]["impressions"] == 100
+
+
+async def test_update_nested_multiply(initialized_repository, logger):
+    """Test multiply operation on a nested numeric field."""
+
+    repo = initialized_repository
+    e = Entity(name="NestedMultiplyTest")
+    e.metadata = {"rates": {"base": 10, "premium": 5}}
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).mul("metadata.rates.base", 2.5)
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["rates"]["base"] == 25
+    assert updated.metadata["rates"]["premium"] == 5
+
+
+async def test_update_nested_min_max(initialized_repository, logger):
+    """Test min/max operations on nested numeric fields."""
+
+    repo = initialized_repository
+    e = Entity(name="NestedMinMaxTest")
+    e.metadata = {"limits": {"floor": 50, "ceiling": 80}}
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+
+    update_min = Update(Entity).min("metadata.limits.floor", 30)
+    await repo.update_one(options, update_min, logger)
+
+    update_max = Update(Entity).max("metadata.limits.ceiling", 100)
+    await repo.update_one(options, update_max, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["limits"]["floor"] == 30
+    assert updated.metadata["limits"]["ceiling"] == 100
+
+
+async def test_update_nested_set(initialized_repository, logger):
+    """Test set operation on a deeply nested field."""
+    repo = initialized_repository
+    e = Entity(name="NestedSetTest")
+    e.metadata = {
+        "user": {
+            "preferences": {
+                "theme": "dark",
+                "notifications": True
+            }
+        }
+    }
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).set("metadata.user.preferences.theme", "light")
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["user"]["preferences"]["theme"] == "light"
+    assert updated.metadata["user"]["preferences"]["notifications"] is True
+
+
+async def test_update_multiple_nested_operations(initialized_repository, logger):
+    """Test multiple nested operations in a single update."""
+
+    repo = initialized_repository
+    e = Entity(name="MultiNestedTest")
+    e.metadata = {
+        "stats": {"views": 100, "likes": 20},
+        "tags": ["initial", "test"],
+        "config": {"enabled": True}
+    }
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+
+    update = (Update(Entity)
+              .increment("metadata.stats.views", 50)
+              .push("metadata.tags", "updated")
+              .set("metadata.config.enabled", False))
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert updated.metadata["stats"]["views"] == 150
+    assert updated.metadata["stats"]["likes"] == 20
+    assert "updated" in updated.metadata["tags"]
+    assert not updated.metadata["config"]["enabled"]
+
+
+async def test_update_pull_with_dict_criteria(initialized_repository, logger):
+    """Test pull operation with dictionary criteria."""
+
+    repo = initialized_repository
+    e = Entity(name="PullDictCriteriaTest")
+    e.metadata = {
+        "items": [
+            {"id": 1, "type": "A", "active": True},
+            {"id": 2, "type": "B", "active": True},
+            {"id": 3, "type": "A", "active": False}
+        ]
+    }
+    await repo.store(e, logger)
+
+    qb = QueryBuilder(Entity)
+    options = qb.filter(qb.fields.id == e.id).build()
+    update = Update(Entity).pull("metadata.items", {"type": "A", "active": True})
+
+    await repo.update_one(options, update, logger)
+
+    updated = await repo.get(e.id, logger)
+    assert len(updated.metadata["items"]) == 2
+    remaining_types = [item["type"] for item in updated.metadata["items"]]
+    assert "B" in remaining_types
+    assert any(item["type"] == "A" and not item["active"]
+               for item in updated.metadata["items"])
+
+
+# Advanced Tests
+async def test_update_with_pydantic_model_field(initialized_repository, logger):
+    """Test updating with a Pydantic model field."""
     class TestModel(BaseModel):
         value: str = Field(alias="alias_value")
         url: AnyHttpUrl = Field(alias="alias_url")
@@ -558,7 +675,10 @@ async def test_update_with_pydantic_model_field_agnostic(initialized_repository,
     e = Entity(name="GenericTest", metadata={})
     await repo.store(e, logger)
 
-    test_model_instance = TestModel(value="sample", url="https://example.com/sample.json") # type: ignore
+    test_model_instance = TestModel(
+        value="sample", 
+        url="https://example.com/sample.json"
+    )
 
     qb = QueryBuilder(Entity)
     options = qb.filter(qb.fields.id == e.id).build()
@@ -568,7 +688,6 @@ async def test_update_with_pydantic_model_field_agnostic(initialized_repository,
     updated = await repo.get(e.id, logger)
 
     assert isinstance(updated.metadata, dict)
-    # Check against alias because prepare_for_storage uses model_dump(by_alias=True)
     assert "alias_value" in updated.metadata
     assert "alias_url" in updated.metadata
     assert updated.metadata["alias_value"] == "sample"

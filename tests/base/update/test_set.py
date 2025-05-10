@@ -20,6 +20,7 @@ from tests.base.conftest import (
 from async_repository.base.utils import prepare_for_storage
 
 from tests.base.conftest import assert_operation_present, find_operations
+from tests.conftest import Entity
 
 
 def test_set_with_valid_types():
@@ -217,3 +218,15 @@ def test_set_without_model_type():
         result, SetOperation, "nested.field", {"value": "nested value"}
     )
     assert_operation_present(result, SetOperation, "a_list", {"value": [1, {"a": 2}]})
+
+
+def test_update_dsl_nested_set():
+    """Test set operation on nested fields."""
+    # Create an update with set operation on nested path
+    update = Update(Entity).set("metadata.settings.theme", "light")
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], SetOperation)
+    assert update._operations[0].field_path == "metadata.settings.theme"
+    assert update._operations[0].value == "light"

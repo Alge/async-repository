@@ -18,7 +18,7 @@ from tests.base.conftest import (
 from async_repository.base.utils import prepare_for_storage
 
 from tests.base.conftest import assert_operation_present
-
+from tests.conftest import Entity
 
 def test_pull_with_type_validation():
     """Test that pull operations are type validated for literals."""
@@ -281,3 +281,15 @@ def test_pull_with_nested_object_criteria():
         update.pull(
             "departments.0.categories.0.tags", 123
         )  # tags expects strings, 123 is literal
+
+
+def test_update_dsl_nested_pull():
+    """Test pull operation on nested array fields."""
+    # Create an update with pull operation on nested path
+    update = Update(Entity).pull("metadata.collections.categories", "A")
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], PullOperation)
+    assert update._operations[0].field_path == "metadata.collections.categories"
+    assert update._operations[0].value_or_condition == "A"

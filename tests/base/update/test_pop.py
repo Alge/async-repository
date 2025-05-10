@@ -10,6 +10,7 @@ from async_repository.base.update import (
 from tests.base.conftest import User, NestedTypes, Organization, find_operations
 
 from tests.base.conftest import assert_operation_present
+from tests.conftest import Entity
 
 
 def test_pop_with_type_validation():
@@ -193,3 +194,15 @@ def test_pop_from_nested_list():
     assert_operation_present(
         result, PopOperation, "departments.0.categories.0.counts", {"position": -1}
     )
+
+
+def test_update_dsl_nested_pop():
+    """Test pop operation on nested array fields."""
+    # Create an update with pop operation on nested path
+    update = Update(Entity).pop("metadata.collections.items", 1)  # Pop from end
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], PopOperation)
+    assert update._operations[0].field_path == "metadata.collections.items"
+    assert update._operations[0].position == 1

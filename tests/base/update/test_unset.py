@@ -10,7 +10,7 @@ from async_repository.base.update import (
 from tests.base.conftest import User, NestedTypes
 
 from tests.base.conftest import assert_operation_present
-
+from tests.conftest import Entity
 
 def test_unset_with_type_validation():
     """Test that unset operations are validated for field existence."""
@@ -99,3 +99,14 @@ def test_unset_build_result():
     assert_operation_present(result, UnsetOperation, "name")
     # Even if metadata.note doesn't exist in a model, unset is allowed without model
     assert_operation_present(result, UnsetOperation, "metadata.note")
+
+
+def test_update_dsl_nested_unset():
+    """Test unset operation on nested fields."""
+    # Create an update with unset operation on nested path
+    update = Update(Entity).unset("metadata.settings.notifications")
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0], UnsetOperation)
+    assert update._operations[0].field_path == "metadata.settings.notifications"

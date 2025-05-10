@@ -1633,47 +1633,47 @@ class MySQLRepository(Repository[T], Generic[T]):
                         "PullOperation with dictionary criteria not supported in MySQL JSON updates."
                     )
 
+                # Convert pull value to appropriate format
+                if isinstance(value_to_pull, (dict, list, tuple, set)):
+                    param_value = json.dumps(value_to_pull)
+                else:
+                    param_value = str(value_to_pull) if hasattr(value_to_pull,
+                                                                '__str__') else value_to_pull
+
+                params.append(param_value)
+
                 if is_nested and json_path:
-                    # Convert pull value to appropriate format for comparison
-                    if isinstance(value_to_pull, (dict, list, tuple, set)):
-                        param_value = json.dumps(value_to_pull)
-                    else:
-                        param_value = str(value_to_pull) if hasattr(value_to_pull,
-                                                                    '__str__') else value_to_pull
-
-                    params.append(param_value)
-
-                    # Add JSON_UNQUOTE to the element in the JSON_ARRAYAGG function
+                    # NOTE: This implementation requires MySQL 5.7.22+ or MariaDB 10.3.3+
+                    # which include support for JSON_ARRAYAGG function
                     set_clauses.append(
                         f"{quoted_base_column} = JSON_SET("
                         f"COALESCE({quoted_base_column}, JSON_OBJECT()), "
                         f"'{json_path}', "
                         f"COALESCE("
-                        # The key fix is here: JSON_UNQUOTE around the element
+                        # Use JSON_UNQUOTE to avoid double-quoting of string values
                         f"  (SELECT JSON_ARRAYAGG(JSON_UNQUOTE(element)) "
                         f"   FROM JSON_TABLE(JSON_EXTRACT({quoted_base_column}, '{json_path}'), "
-                        f"   '$[*]' COLUMNS(element JSON PATH '$')) AS jt "
+                        f"     '$[*]' COLUMNS(element JSON PATH '$')) AS jt "
                         f"   WHERE JSON_UNQUOTE(element) != %s),"
                         f"  JSON_ARRAY()"
                         f")"
                         f")"
                     )
-
                 else:
-                    # Just use plain string value for comparison
-                    params.append(str(value_to_pull))
-
-                    # Simple query that uses JSON_ARRAYAGG without CAST
+                    # Top-level array pull operation
+                    # NOTE: This implementation requires MySQL 5.7.22+ or MariaDB 10.3.3+
+                    # which include support for JSON_ARRAYAGG function
                     set_clauses.append(
-                        f"""
-                        {quoted_base_column} = COALESCE(
-                            (SELECT JSON_ARRAYAGG(element) 
-                             FROM JSON_TABLE({quoted_base_column}, '$[*]' COLUMNS(element JSON PATH '$')) AS jt
-                             WHERE JSON_UNQUOTE(element) != %s),
-                            JSON_ARRAY()
-                        )
-                        """
+                        f"{quoted_base_column} = COALESCE("
+                        # Use JSON_UNQUOTE to avoid double-quoting of string values
+                        f"  (SELECT JSON_ARRAYAGG(JSON_UNQUOTE(element)) "
+                        f"   FROM JSON_TABLE({quoted_base_column}, "
+                        f"     '$[*]' COLUMNS(element JSON PATH '$')) AS jt "
+                        f"   WHERE JSON_UNQUOTE(element) != %s),"
+                        f"  JSON_ARRAY()"
+                        f")"
                     )
+
 
             else:
                 raise TypeError(f"Unsupported UpdateOperation: {type(op)}")

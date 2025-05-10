@@ -10,7 +10,7 @@ from async_repository.base.update import (
 from tests.base.conftest import User, NumericModel, NestedTypes
 
 from tests.base.conftest import assert_operation_present
-
+from tests.conftest import Entity
 
 def test_decrement_with_type_validation():
     """Test that decrement operations are type validated."""
@@ -235,3 +235,16 @@ def test_decrement_reuses_increment():
     assert op2.field_path == "int_field"
     assert op1.amount == -10
     assert op2.amount == -10  # decrement(10) results in IncrementOperation(amount=-10)
+
+
+def test_update_dsl_nested_decrement():
+    """Test decrement operation on nested numeric fields."""
+    # Create an update with decrement operation on nested path
+    update = Update(Entity).decrement("metadata.stats.clicks", 10)
+
+    # Assert the operation was added correctly
+    assert len(update._operations) == 1
+    assert isinstance(update._operations[0],
+                      IncrementOperation)  # decrement uses increment with negative value
+    assert update._operations[0].field_path == "metadata.stats.clicks"
+    assert update._operations[0].amount == -10

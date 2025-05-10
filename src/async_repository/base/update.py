@@ -139,6 +139,38 @@ class Update(Generic[M]):
                     f"Field '{field_path}' already has an increment/decrement operation. Multiple increment/decrement operations on the same field are not allowed."
                 )
 
+    def _is_nested_path_in_dict(self, field_path: str) -> bool:
+        """Check if a field path is a nested path within a dictionary field."""
+        if "." not in field_path:
+            return False
+
+        # Get the base field (first segment of the path)
+        base_field = field_path.split(".")[0]
+
+        try:
+            if not self._validator:
+                return False
+
+            field_type = self._validator.get_field_type(base_field)
+            origin = get_origin(field_type)
+            args = get_args(field_type)
+
+            # Check if base field is a dictionary type directly
+            is_dict_type = origin in (dict, Dict)
+
+            # Or if it's an Optional[Dict]
+            if origin is Union:
+                is_dict_type = any(
+                    get_origin(arg) in (dict, Dict)
+                    for arg in args
+                    if not _is_none_type(arg)
+                )
+
+            return is_dict_type
+        except Exception:
+            # If we can't determine the type, assume it's not a dict
+            return False
+
     # --- Update Methods ---
     def set(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
         field_path = self._get_field_path(field)
@@ -163,6 +195,16 @@ class Update(Generic[M]):
     def push(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
         field_path = self._get_field_path(field)
         serialized_item = prepare_for_storage(value)
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing push operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                PushOperation(field_path=field_path, items=[serialized_item]))
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 is_list, item_type = self._validator.get_list_item_type(field_path)
@@ -190,19 +232,30 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for push on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(
             PushOperation(field_path=field_path, items=[serialized_item])
         )
         return self
 
     def pop(
-        self, field: Union[str, Field[Any]], position: Literal[-1, 1] = 1
+            self, field: Union[str, Field[Any]], position: Literal[-1, 1] = 1
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if position not in (1, -1):
             raise ValueError(
                 f"Position for pop must be 1 (last) or -1 (first), got {position}."
             )
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing pop operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                PopOperation(field_path=field_path, position=position))
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 is_list, _ = self._validator.get_list_item_type(field_path)
@@ -219,6 +272,7 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for pop on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(PopOperation(field_path=field_path, position=position))
         return self
 
@@ -240,7 +294,7 @@ class Update(Generic[M]):
         return self
 
     def pull(
-        self, field: Union[str, Field[Any]], value_or_condition: Any
+            self, field: Union[str, Field[Any]], value_or_condition: Any
     ) -> "Update[M]":
         """Adds a 'pull' operation (removes matching items from an array)."""
         field_path = self._get_field_path(field)
@@ -255,6 +309,16 @@ class Update(Generic[M]):
             else prepare_for_storage(value_or_condition)
         )
 
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing pull operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                PullOperation(field_path=field_path, value_or_condition=value_to_store)
+            )
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 is_list, item_type = self._validator.get_list_item_type(field_path)
@@ -296,7 +360,7 @@ class Update(Generic[M]):
         return self
 
     def increment(
-        self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
+            self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if not isinstance(amount, (int, float)):
@@ -304,6 +368,17 @@ class Update(Generic[M]):
                 f"Increment amount must be numeric, got {type(amount).__name__}."
             )
         self._check_numeric_op_conflict(field_path)
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing increment operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                IncrementOperation(field_path=field_path, amount=amount)
+            )
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 field_type = self._validator.get_field_type(field_path)
@@ -333,13 +408,14 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for increment on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(
             IncrementOperation(field_path=field_path, amount=amount)
         )
         return self
 
     def decrement(
-        self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
+            self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if not isinstance(amount, (int, float)):
@@ -351,11 +427,20 @@ class Update(Generic[M]):
         return self  # increment already appended the operation
 
     def min(
-        self, field: Union[str, Field[Any]], value: Union[int, float]
+            self, field: Union[str, Field[Any]], value: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if not isinstance(value, (int, float)):
             raise TypeError(f"Min value must be numeric, got {type(value).__name__}.")
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing min operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(MinOperation(field_path=field_path, value=value))
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 field_type = self._validator.get_field_type(field_path)
@@ -388,15 +473,25 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for min on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(MinOperation(field_path=field_path, value=value))
         return self
 
     def max(
-        self, field: Union[str, Field[Any]], value: Union[int, float]
+            self, field: Union[str, Field[Any]], value: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if not isinstance(value, (int, float)):
             raise TypeError(f"Max value must be numeric, got {type(value).__name__}.")
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing max operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(MaxOperation(field_path=field_path, value=value))
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 field_type = self._validator.get_field_type(field_path)
@@ -429,17 +524,28 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for max on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(MaxOperation(field_path=field_path, value=value))
         return self
 
     def mul(
-        self, field: Union[str, Field[Any]], factor: Union[int, float]
+            self, field: Union[str, Field[Any]], factor: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
         if not isinstance(factor, (int, float)):
             raise TypeError(
                 f"Multiply factor must be numeric, got {type(factor).__name__}."
             )
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing multiply operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                MultiplyOperation(field_path=field_path, factor=factor))
+            return self
+
+        # Original validation logic
         if self._validator:
             try:
                 field_type = self._validator.get_field_type(field_path)
@@ -469,6 +575,7 @@ class Update(Generic[M]):
                 raise RuntimeError(
                     f"Unexpected validation error for mul on '{field_path}': {e}"
                 ) from e
+
         self._operations.append(MultiplyOperation(field_path=field_path, factor=factor))
         return self
 
