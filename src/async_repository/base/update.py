@@ -132,12 +132,50 @@ class Update(Generic[M]):
             f"Expected field to be str or Field, got {type(field).__name__}"
         )
 
-    def _check_numeric_op_conflict(self, field_path: str):
+    def _check_field_conflict(self, field_path: str) -> None:
+        """
+        Check if the field already has any operation applied to it or conflicts with parent/child fields.
+
+        A field conflicts with another if:
+        1. They are the exact same field path
+        2. One is a parent of the other (e.g., "metadata" and "metadata.key1")
+        3. One is a child of the other (e.g., "metadata.key1" and "metadata")
+        """
         for op in self._operations:
-            if isinstance(op, IncrementOperation) and op.field_path == field_path:
-                raise ValueError(
-                    f"Field '{field_path}' already has an increment/decrement operation. Multiple increment/decrement operations on the same field are not allowed."
-                )
+            existing_path = op.field_path
+
+            # Check for exact field path match
+            if existing_path == field_path:
+                conflict_type = "exact match"
+
+            # Check if existing path is a parent of new field path
+            elif field_path.startswith(existing_path + "."):
+                conflict_type = "child"
+
+            # Check if new field path is a parent of existing path
+            elif existing_path.startswith(field_path + "."):
+                conflict_type = "parent"
+
+            else:
+                # No conflict found with this operation
+                continue
+
+            # We found a conflict - log and raise an error
+            self._logger.warning(
+                f"Field conflict detected: '{field_path}' conflicts with existing operation on '{existing_path}' ({conflict_type}). "
+                f"SQL databases don't support operations that affect the same fields in a single UPDATE statement. "
+                f"Split into separate UPDATE calls to apply operations sequentially."
+            )
+
+            # Customize the error message based on the type of conflict
+            if conflict_type == "exact match":
+                message = f"Field '{field_path}' already has an operation. Multiple operations on the same field are not allowed in a single update."
+            elif conflict_type == "child":
+                message = f"Field '{field_path}' conflicts with existing operation on parent field '{existing_path}'. Parent-child field conflicts are not allowed in a single update."
+            else:  # parent
+                message = f"Field '{field_path}' conflicts with existing operation on child field '{existing_path}'. Parent-child field conflicts are not allowed in a single update."
+
+            raise ValueError(message)
 
     def _is_nested_path_in_dict(self, field_path: str) -> bool:
         """Check if a field path is a nested path within a dictionary field."""
@@ -174,6 +212,7 @@ class Update(Generic[M]):
     # --- Update Methods ---
     def set(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         serialized_value = prepare_for_storage(value)
         if self._validator:
             try:
@@ -194,6 +233,7 @@ class Update(Generic[M]):
 
     def push(self, field: Union[str, Field[Any]], value: Any) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         serialized_item = prepare_for_storage(value)
 
         # Skip validation for nested paths in dictionary fields
@@ -242,6 +282,7 @@ class Update(Generic[M]):
             self, field: Union[str, Field[Any]], position: Literal[-1, 1] = 1
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if position not in (1, -1):
             raise ValueError(
                 f"Position for pop must be 1 (last) or -1 (first), got {position}."
@@ -278,6 +319,7 @@ class Update(Generic[M]):
 
     def unset(self, field: Union[str, Field[Any]]) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if self._validator:
             try:
                 self._validator.get_field_type(field_path)
@@ -298,6 +340,7 @@ class Update(Generic[M]):
     ) -> "Update[M]":
         """Adds a 'pull' operation (removes matching items from an array)."""
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         is_operator_dict = isinstance(value_or_condition, dict) and any(
             k.startswith("$") for k in value_or_condition.keys()
         )
@@ -363,11 +406,11 @@ class Update(Generic[M]):
             self, field: Union[str, Field[Any]], amount: Union[int, float] = 1
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if not isinstance(amount, (int, float)):
             raise TypeError(
                 f"Increment amount must be numeric, got {type(amount).__name__}."
             )
-        self._check_numeric_op_conflict(field_path)
 
         # Skip validation for nested paths in dictionary fields
         if self._validator and self._is_nested_path_in_dict(field_path):
@@ -422,14 +465,60 @@ class Update(Generic[M]):
             raise TypeError(
                 f"Decrement amount must be numeric, got {type(amount).__name__}."
             )
-        # Use the logic of the increment method, including conflict check and validation
-        self.increment(field_path, -amount)  # Pass negative value
-        return self  # increment already appended the operation
+        # Use the logic of the increment method with negative value
+        # We don't call self.increment to avoid adding the operation twice
+        self._check_field_conflict(field_path)
+
+        # Skip validation for nested paths in dictionary fields
+        if self._validator and self._is_nested_path_in_dict(field_path):
+            self._logger.debug(
+                f"Allowing decrement operation on nested path '{field_path}' within dictionary field")
+            self._operations.append(
+                IncrementOperation(field_path=field_path, amount=-amount)
+            )
+            return self
+
+        # Original validation logic
+        if self._validator:
+            try:
+                field_type = self._validator.get_field_type(field_path)
+                origin = get_origin(field_type)
+                args = get_args(field_type)
+                is_field_numeric = False
+                if origin is Union:
+                    is_field_numeric = any(
+                        self._validator._is_single_type_numeric(a)
+                        for a in args
+                        if not _is_none_type(a)
+                    )
+                else:
+                    is_field_numeric = self._validator._is_single_type_numeric(
+                        field_type
+                    )
+                if not is_field_numeric:
+                    raise ValueTypeError(
+                        f"Cannot decrement non-numeric field '{field_path}' (type: {self._validator._get_type_name(field_type)})."
+                    )
+            except (InvalidPathError, ValueTypeError) as e:
+                raise e
+            except Exception as e:
+                self._logger.error(
+                    f"Unexpected validation error during decrement: {e}", exc_info=True
+                )
+                raise RuntimeError(
+                    f"Unexpected validation error for decrement on '{field_path}': {e}"
+                ) from e
+
+        self._operations.append(
+            IncrementOperation(field_path=field_path, amount=-amount)
+        )
+        return self
 
     def min(
             self, field: Union[str, Field[Any]], value: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if not isinstance(value, (int, float)):
             raise TypeError(f"Min value must be numeric, got {type(value).__name__}.")
 
@@ -481,6 +570,7 @@ class Update(Generic[M]):
             self, field: Union[str, Field[Any]], value: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if not isinstance(value, (int, float)):
             raise TypeError(f"Max value must be numeric, got {type(value).__name__}.")
 
@@ -532,6 +622,7 @@ class Update(Generic[M]):
             self, field: Union[str, Field[Any]], factor: Union[int, float]
     ) -> "Update[M]":
         field_path = self._get_field_path(field)
+        self._check_field_conflict(field_path)  # Check for field conflict
         if not isinstance(factor, (int, float)):
             raise TypeError(
                 f"Multiply factor must be numeric, got {type(factor).__name__}."
