@@ -10,3 +10,9 @@ class KeyAlreadyExistsException(Exception):
 
     def __init__(self, message: str = "An object with the same key already exists."):
         super().__init__(message)
+
+
+class ObjectValidationException(Exception):
+    def __init__(self, message: str = "Object validation failed"):
+        super().__init__(message)
+

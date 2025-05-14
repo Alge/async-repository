@@ -31,6 +31,16 @@ class Repository(Generic[T], ABC):
     The `initialize` method orchestrates the explicit creation steps.
     """
 
+    def __init__(self, skip_custom_validation: bool = False):
+        """
+        Initialize repository with validation settings.
+
+        Args:
+            skip_custom_validation: If True, custom validators are skipped when
+                                   deserializing entities from the database.
+        """
+        self._skip_custom_validation = skip_custom_validation
+
     @property
     @abstractmethod
     def entity_type(self) -> Type[T]:

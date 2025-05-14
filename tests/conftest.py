@@ -7,7 +7,6 @@ import platform
 import shutil
 import subprocess
 import uuid
-from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -19,6 +18,8 @@ import aiosqlite
 import motor.motor_asyncio
 import aiomysql
 from pymongo.errors import ConnectionFailure
+
+from pydantic import field_validator, BaseModel, Field
 
 
 from async_repository.db_implementations.postgresql_repository import PostgresRepository
@@ -460,49 +461,44 @@ def logger():
 # --- Test Entity ---
 
 
-@dataclass
-class ProfileData:
+class ProfileData(BaseModel):
     """Nested structure for Entity profile."""
 
-    emails: List[str] = field(default_factory=list)
+    emails: List[str] = Field(default_factory=list)
     phone: Optional[str] = None
-    settings: Dict[str, Any] = field(default_factory=dict)
+    settings: Dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class Entity:
+class Entity(BaseModel):
     """A simple entity class for repository testing."""
 
-    id: Optional[str] = field(default_factory=lambda: f"test-{uuid.uuid4()}")
-    name: str = field(
+    id: Optional[str] = Field(default_factory=lambda: f"test-{uuid.uuid4()}")
+    name: str = Field(
         default_factory=lambda: f"Test Entity {uuid.uuid4().hex[:8]}"
     )
     value: int = 100
     float_value: float = 100.0
-    tags: List[str] = field(default_factory=lambda: ["test", "sample"])
+    tags: List[str] = Field(default_factory=lambda: ["test", "sample"])
     active: bool = True
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
     updated_at: Optional[datetime] = None
     owner: Optional[str] = None
-    profile: ProfileData = field(default_factory=ProfileData)
-    binary_blob: bytes = field(default=b"1000100100100010001001010101111001011")
+    profile: ProfileData = Field(default_factory=ProfileData)
+    binary_blob: bytes = Field(default=b"1000100100100010001001010101111001011")
+    bool_has_to_be_true: bool = True
 
-    def copy(self):
-        # Using asdict might require handling nested dataclasses if deep copy needed
-        data = asdict(self)
-        # Manually reconstruct ProfileData if asdict converted it
-        if isinstance(data.get('profile'), dict):
-            data['profile'] = ProfileData(**data['profile'])
-        return Entity(**data)
+    @field_validator("bool_has_to_be_true")
+    @classmethod
+    def validate_allways_true_bool(cls, value):
+        if value == False:
+            raise ValueError("Value has to be true!")
 
-    def model_dump(self, mode="json", by_alias=True) -> Dict[str, Any]:
-        """Mimics Pydantic for compatibility tests."""
-        # Simple asdict conversion - NOTE: This might not handle nested models
-        # or aliases exactly like Pydantic v2 model_dump. Be aware in tests.
-        return asdict(self)
+        return value
+
+
 
 
 @pytest.fixture
